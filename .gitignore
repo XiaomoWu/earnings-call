@@ -1,0 +1,19 @@
+// files
+*.rds
+*.zip
+*.pdf
+*.xlsx
+*.csv
+*.html
+*.feather
+*.pkl
+
+// folders
+/.ipynb_checkpoints
+/writing
+/data/factiva-transcripts
+/data/WRDS-download
+/data/ciq-transcripts
+/data/factiva-headlines
+/data/factiva-transcripts
+/data/seeking-alpha-cc-example
