@@ -2,19 +2,6 @@
 # To add a new markdown cell, type '# %% [markdown]'
 # %%
 from IPython import get_ipython
-
-class Now:
-    '''return current datetime, but has a more pretty format
-    '''
-    def __init__(self):
-        self.current_datetime = datetime.now()
-    def __repr__(self):
-        return self.current_datetime.strftime('%H:%M:%S')  
-
-# %% [markdown]
-# # Code
-
-# %%
 from datetime import datetime, date
 from io import StringIO as StringIO_StringIO
 from json import (
@@ -43,8 +30,41 @@ from statsmodels.api import (
 )
 from tabulate import tabulate
 import wrds
+import pickle
 
+class Now:
+    '''return current datetime, but has a more pretty format
+    '''
+    def __init__(self):
+        self.current_datetime = datetime.now()
+    def __repr__(self):
+        return self.current_datetime.strftime('%H:%M:%S')  
 
+def sv(objname: str, savename: str = None, path='./data', log=True):
+    '''
+    log: output success messsage at the end
+    '''
+    assert isinstance(objname, str)
+    if savename is None:
+        savename = objname
+    save_path = f"{path}/{savename}.pkl"
+    obj = globals()[objname]
+    with open(save_path, 'wb') as f:
+        pickle.dump(obj, f)
+    if log is True:
+        if savename == objname:
+            print(f'-{objname}- saved')
+        else:
+            print(f'-{objname}- saved as -{savename}-')
+
+def chunks(l, n):
+    """Yield successive n-sized chunks from l."""
+    for i in range(0, len(l), n):
+        yield l[i:i + n]
+# %% [markdown]
+# # Code
+
+# %%
 class EncoderJson(json_JSONEncoder):
     """
     Class used to encodes to JSON data format
@@ -78,6 +98,8 @@ class EventStudy(object):
         else:
             self.output_path = output_path
 
+        self.wconn = wrds.Connection(wrds_username='xiaomowu')
+        
     # Connect to the Postgres database
     # Code assumes pgpass file has been created
     def connect(self):
@@ -94,7 +116,7 @@ class EventStudy(object):
     def eventstudy(self, data=None, model='m', estwin=100, gap=50, evtwins=-10, evtwine=10, minval=70, output='df', use_download=False):
         """
             Paramaters passed to the event study method.
-
+            
             data        =   event data (event date & permno combinations)
             model       =   madj (market-adjusted model)
                             m (market model)
@@ -113,7 +135,6 @@ class EventStudy(object):
                             print (outputs results to the console - not available via qsub)
         """
 
-        ####################################################################################
         #  STEP 1 - SET ESTIMATION, EVENT, AND GAP WINDOWS AND GRAB DATA FROM EVENTS FILE  #
         ####################################################################################
 
@@ -158,15 +179,16 @@ class EventStudy(object):
         #  STEP 2 - GET RETURNS DATA FROM POSTGRES  #
         #############################################
 
-        # Create a database connection
-        wconn = self.connect()
+#         # Create a database connection
+#         wconn = self.connect()
+        wconn = self.wconn
 
         ##############################################################################
         #  Get the initial data from the database and put it in a pandas dataframe   #
         ##############################################################################
 
         # create a pandas dataframe that will hold data
-        print(f'Start downloading: {Now()}')
+#         print(f'Start downloading: {Now()}')
         
         if use_download is False:
             df = wconn.raw_sql("""
@@ -220,7 +242,7 @@ class EventStudy(object):
             AND c.ret is not null
             ORDER BY x.evtid, x.permno, a.date, c.date
             """ % params)
-            print(f'Downloading finished {Now()}')
+#             print(f'Downloading finished {Now()}')
         
         # Columns coming from the database query
         df.columns = ['date', 'estwin1', 'estwin2', 'evtwin1', 'evtwin2',
@@ -248,8 +270,8 @@ class EventStudy(object):
 
         # Loop on every category
         for i, evt in enumerate(data):
-            if i % 100 == 0:
-                print(f'{i+1}/{len(data)} {Now()}')
+#             if i % 1000 == 0:
+#                 print(f'{i+1}/{len(data)} {Now()}')
 
             permno = evt['permno']
             xdate = evt['edate']
@@ -782,18 +804,40 @@ class EventStudy(object):
 # # Execution
 
 eventstudy = EventStudy(output_path='./')
+batch_size = 100
 
+'''
 with open('event_samples_earnings_call.json') as data_file:
     events_call = json_load(data_file)
+    
+for i, events in enumerate(chunks(events_call, batch_size)):
+    print(f'Starting {i*batch_size+1}/{len(events_call)} {Now()}...')
+    car = eventstudy.eventstudy(
+        data=events, 
+        model='ff', 
+        estwin=100, 
+        gap=50, 
+        evtwins=0, # important!
+        evtwine=30, # important!
+        minval=70, 
+        output='df')
 
-
-car_30d = eventstudy.eventstudy(data=events_call, model='ff', estwin=100, gap=30, evtwins=0, evtwine=30, minval=70, output='df')
-sv('car_30d')
-
-
+    sv('car', f'./car-temp/car_30d_{i}', path='.', log=False)
 '''
-# retval['event_stats'] = df_stats
-# retval['event_window'] = df_evtw
-# retval['event_date'] = df_evtd      
-result['event_date']
-'''
+
+with open('event_samples_earnings_announce.json') as data_file:
+    events_call = json_load(data_file)
+    
+for i, events in enumerate(chunks(events_call, batch_size)):
+    print(f'Starting {i*batch_size+1}/{len(events_call)} {Now()}...')
+    car = eventstudy.eventstudy(
+        data=events, 
+        model='ff', 
+        estwin=100, 
+        gap=50, 
+        evtwins=0, # important!
+        evtwine=30, # important!
+        minval=70, 
+        output='df')
+
+    sv('car', f'./car-temp/car_announce_30d_{i}', path='.', log=False)
