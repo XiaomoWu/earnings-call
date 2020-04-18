@@ -8,12 +8,17 @@
 *.feather
 *.pkl
 *.pt
+*.json
+
 
 // folders
+neat-vision
+/.data
 /.ipynb_checkpoints
 /writing
 /data/CAR/.ipynb_checkpoints
 /data/factiva-transcripts
+/data/imdb5k
 /data/WRDS-download
 /data/ciq-transcripts
 /data/factiva-headlines
