@@ -9,7 +9,7 @@
 *.pkl
 *.pt
 *.json
-
+*.mtx
 
 // folders
 neat-vision
