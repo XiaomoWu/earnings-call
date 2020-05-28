@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.4.1
+#       jupytext_version: 1.4.2
 #   kernelspec:
 #     display_name: Python 3
 #     language: python
@@ -81,7 +81,7 @@ n_cpu = int(mp.cpu_count()/2);
 
 print(f'\nCPU count (physical): {n_cpu}');
 
-# %% [markdown] toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true
+# %% [markdown] toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true
 # # Pre-encode
 
 # %%
@@ -614,10 +614,10 @@ with torch.no_grad():
         y = xlnet_model(inputs)[0].to(cpu)
 
 
-# %% [markdown] toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true
+# %% [markdown] toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true
 # # Merge embeddings
 
-# %% [markdown] toc-hr-collapsed=true toc-nb-collapsed=true
+# %% [markdown] toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true
 # ## merge pre-embedding
 
 # %%
@@ -852,6 +852,9 @@ np.mean(n_test_samples)
 # %% [markdown]
 # # Base
 
+# %% [markdown] toc-hr-collapsed=true toc-nb-collapsed=true
+# ## helpers
+
 # %%
 # helper: refresh cuda memory
 def refresh_cuda_memory():
@@ -897,6 +900,9 @@ def load_split_df(roll_type):
     split_df = pd.read_csv(f'{DATA_DIR}/split_dates.csv')
     globals()['split_df'] = split_df.loc[split_df.roll_type==roll_type]
 
+
+# %% [markdown] toc-hr-collapsed=true toc-nb-collapsed=true
+# ## `train`
 
 # %%
 # loop one
@@ -963,13 +969,12 @@ def train_one(Model, window_i, model_hparams, train_hparams):
     # delete unused hparam
     if model.model_type=='mlp': model_hparams.pop('final_tdim',None)
     if model.feature_type=='fin-ratio': 
-        model_hparams.pop('preembedding_type',None)
         model_hparams.pop('max_seq_len',None)
         model_hparams.pop('n_layers_encoder',None)
         model_hparams.pop('n_head_encoder',None)
         model_hparams.pop('d_model',None)
         model_hparams.pop('dff',None)
-    if model.feature_type!='text + fin-ratio': 
+    if model.feature_type=='text': 
         model_hparams.pop('normalize_layer',None)
         model_hparams.pop('normalize_batch',None)
     if model.attn_type!='mha': model_hparams.pop('n_head_decoder',None)
@@ -1008,11 +1013,17 @@ def train_one(Model, window_i, model_hparams, train_hparams):
         logger.finalize('finished')
 
 
+# %% [markdown]
+# ## `Dataset` + `Model`
+
+# %% [markdown]
+# `val` and `train` are of same period
+
 # %%
 # Dataset: Txt + Fin-ratio
 class CCDataset(Dataset):
     
-    def __init__(self, split_window, split_type, text_in_dataset, roll_type, print_window, transcriptids=None, transform=None):
+    def __init__(self, split_window, split_type, text_in_dataset, roll_type, print_window, valid_transcriptids=None, transform=None):
         '''
         Args:
             preembeddings (from globals): list of embeddings. Each element is a tensor (S, E) where S is number of sentences in a call
@@ -1026,30 +1037,34 @@ class CCDataset(Dataset):
 
         self.text_in_dataset = text_in_dataset
         
-        # decalre data as globals so don't need to create/reload
+        # decalre data as globals so don't   need to create/reload
         global preembeddings, targets_df, split_df
         
         # get split dates from `split_df`
-        _, train_start, train_end, test_start, test_end, _ = tuple(split_df.loc[(split_df.window==split_window) & (split_df.roll_type==roll_type)].iloc[0])
+        _, train_start, train_end, val_start, val_end, test_start, test_end, _ = tuple(split_df.loc[(split_df.window==split_window) & (split_df.roll_type==roll_type)].iloc[0])
         # print current window
         if print_window:
-            print(f'Current window: {split_window} ({roll_type}) \n(train: {train_start} to {train_end}) (test: {test_start} to {test_end})')
+            print(f'Current window: {split_window} ({roll_type}) \n(train: {train_start} to {train_end}) (val: {val_start} to {val_end}) (test: {test_start} to {test_end})')
         
         train_start = datetime.strptime(train_start, '%Y-%m-%d').date()
         train_end = datetime.strptime(train_end, '%Y-%m-%d').date()
+        val_start = datetime.strptime(val_start, '%Y-%m-%d').date()
+        val_end = datetime.strptime(val_end, '%Y-%m-%d').date()
         test_start = datetime.strptime(test_start, '%Y-%m-%d').date()
         test_end = datetime.strptime(test_end, '%Y-%m-%d').date()
         
         # select valid transcriptids (preemb_keys) according to split dates 
         if split_type=='train':
             transcriptids = targets_df[targets_df.ciq_call_date.between(train_start, train_end)].transcriptid.tolist()
+        if split_type=='val':
+            transcriptids = targets_df[targets_df.ciq_call_date.between(val_start, val_end)].transcriptid.tolist()
         elif split_type=='test':
             transcriptids = targets_df[targets_df.ciq_call_date.between(test_start, test_end)].transcriptid.tolist()
 
         self.valid_preemb_keys = set(transcriptids).intersection(set(preembeddings.keys()))
         
-        if transcriptids is not None:
-            self.valid_preemb_keys = self.valid_preemb_keys.intersection(set(transcriptids))
+        if valid_transcriptids is not None:
+            self.valid_preemb_keys = self.valid_preemb_keys.intersection(set(valid_transcriptids))
         
         # self attributes
         self.targets_df = targets_df
@@ -1158,7 +1173,235 @@ class CC(pl.LightningModule):
     def prepare_data(self):
         self.train_dataset = CCDataset(self.hparams.window, split_type='train', text_in_dataset=self.text_in_dataset,
                                        roll_type=self.hparams.roll_type, print_window=True)
-        self.val_dataset = CCDataset(self.hparams.window, split_type='test', text_in_dataset=self.text_in_dataset,
+        self.val_dataset = CCDataset(self.hparams.window, split_type='val', text_in_dataset=self.text_in_dataset,
+                                     roll_type=self.hparams.roll_type, print_window=False)
+        self.test_dataset = CCDataset(self.hparams.window, split_type='test', text_in_dataset=self.text_in_dataset, 
+                                      roll_type=self.hparams.roll_type, print_window=False)
+
+    # DataLoader
+    def train_dataloader(self):
+        '''
+        Caution:
+        - If you enable `BatchNorm`, then must set `drop_last=True`.
+        '''
+        collate_fn = self.collate_fn if self.text_in_dataset else None
+        return DataLoader(self.train_dataset, batch_size=self.hparams.batch_size, shuffle=True, drop_last=True, num_workers=0, pin_memory=True, collate_fn=collate_fn)
+    
+    def val_dataloader(self):
+        '''
+        Caution: 
+        - To improve the validation speed, I'll set val_batch_size to 4. 
+        - Must set `drop_last=True`, otherwise the `val_loss` tensors for different batches won't match and hence give you error.
+        - Not to set `val_batch_size` too large (e.g., 16), otherwise you'll lose precious validation data points
+        '''
+        collate_fn = self.collate_fn if self.text_in_dataset else None
+        return DataLoader(self.val_dataset, batch_size=self.hparams.val_batch_size, num_workers=0, pin_memory=True, collate_fn=collate_fn, drop_last=True)
+    
+    def test_dataloader(self):
+        collate_fn = self.collate_fn if self.text_in_dataset else None
+        return DataLoader(self.test_dataset, num_workers=0, pin_memory=True, collate_fn=collate_fn)
+    
+    def collate_fn(self, data):
+        '''create mini-batch
+
+        Retures:
+            embeddings: tensor, (N, S, E)
+            mask: tensor, (N, S)
+            sue,car,selead,sest: tensor, (N,)
+        '''
+        # embeddings: (N, S, E)
+        car_0_30, transcriptid, embeddings, alpha, car_m1_m1, car_m2_m2, car_m30_m3, \
+        sest, sue, numest, sstdest, smedest, \
+        mcap, roa, bm, debt_asset, volatility, volume = zip(*data)
+            
+        # pad sequence
+        # the number of `padding_value` is irrelevant, since we'll 
+        # apply a mask in the Transformer encoder, which will 
+        # eliminate the padded positions.
+        valid_seq_len = [emb.shape[-2] for emb in embeddings]
+        embeddings = pad_sequence(embeddings, batch_first=True, padding_value=0) # (N, T, E)
+
+        # mask: (N, T)
+        mask = torch.ones((embeddings.shape[0], embeddings.shape[1]))
+        for i, length in enumerate(valid_seq_len):
+            mask[i, :length] = 0
+        mask = mask == 1
+
+        return torch.tensor(car_0_30, dtype=torch.float32), torch.tensor(transcriptid, dtype=torch.float32), \
+               embeddings.float(), mask, \
+               torch.tensor(alpha, dtype=torch.float32), torch.tensor(car_m1_m1, dtype=torch.float32), \
+               torch.tensor(car_m2_m2, dtype=torch.float32), torch.tensor(car_m30_m3, dtype=torch.float32), \
+               torch.tensor(sest, dtype=torch.float32), torch.tensor(sue, dtype=torch.float32), \
+               torch.tensor(numest, dtype=torch.float32), torch.tensor(sstdest, dtype=torch.float32), \
+               torch.tensor(smedest, dtype=torch.float32), torch.tensor(mcap, dtype=torch.float32), \
+               torch.tensor(roa, dtype=torch.float32), torch.tensor(bm, dtype=torch.float32), \
+               torch.tensor(debt_asset, dtype=torch.float32), torch.tensor(volatility, dtype=torch.float32), \
+               torch.tensor(volume, dtype=torch.float32)
+        
+    # optimizer
+    def configure_optimizers(self):
+        optimizer = optim.Adam(self.parameters(), lr=self.hparams.learning_rate)
+        return optimizer   
+
+
+# %% [markdown]
+# `val` is after `train`
+
+# %%
+# Dataset: Txt + Fin-ratio
+class CCDataset(Dataset):
+    
+    def __init__(self, split_window, split_type, text_in_dataset, roll_type, print_window, valid_transcriptids=None, transform=None):
+        '''
+        Args:
+            preembeddings (from globals): list of embeddings. Each element is a tensor (S, E) where S is number of sentences in a call
+            targets_df (from globals): DataFrame of targets variables.
+            split_df (from globals):
+            split_window: str. e.g., "roll-09"
+            split_type: str. 'train' or 'test'
+            text_only: only output CAR and transcripts if true, otherwise also output financial ratios
+            transcriptids: list. If provided, only the given transcripts will be used in generating the Dataset. `transcriptids` is applied **on top of** `split_window` and `split_type`
+        '''
+
+        self.text_in_dataset = text_in_dataset
+        
+        # decalre data as globals so don't   need to create/reload
+        global preembeddings, targets_df, split_df
+        
+        # get split dates from `split_df`
+        _, train_start, train_end, val_start, val_end, test_start, test_end, _ = tuple(split_df.loc[(split_df.window==split_window) & (split_df.roll_type==roll_type)].iloc[0])
+        # print current window
+        if print_window:
+            print(f'Current window: {split_window} ({roll_type}) \n(train: {train_start} to {train_end}) (val: {val_start} to {val_end}) (test: {test_start} to {test_end})')
+        
+        train_start = datetime.strptime(train_start, '%Y-%m-%d').date()
+        train_end = datetime.strptime(train_end, '%Y-%m-%d').date()
+        val_start = datetime.strptime(val_start, '%Y-%m-%d').date()
+        val_end = datetime.strptime(val_end, '%Y-%m-%d').date()
+        test_start = datetime.strptime(test_start, '%Y-%m-%d').date()
+        test_end = datetime.strptime(test_end, '%Y-%m-%d').date()
+        
+        # select valid transcriptids (preemb_keys) according to split dates 
+        if split_type=='train':
+            transcriptids = targets_df[targets_df.ciq_call_date.between(train_start, train_end)].transcriptid.tolist()
+        if split_type=='val':
+            transcriptids = targets_df[targets_df.ciq_call_date.between(val_start, val_end)].transcriptid.tolist()
+        elif split_type=='test':
+            transcriptids = targets_df[targets_df.ciq_call_date.between(test_start, test_end)].transcriptid.tolist()
+
+        self.valid_preemb_keys = set(transcriptids).intersection(set(preembeddings.keys()))
+        
+        if valid_transcriptids is not None:
+            self.valid_preemb_keys = self.valid_preemb_keys.intersection(set(valid_transcriptids))
+        
+        # self attributes
+        self.targets_df = targets_df
+        self.preembeddings = preembeddings
+        self.transform = transform
+        self.sent_len = sorted([(k, preembeddings[k].shape[0]) for k in self.valid_preemb_keys], key=itemgetter(1))
+        self.train_start = train_start
+        self.train_end = train_end
+        self.test_start = test_start
+        self.test_end = test_end
+        self.n_samples = len(self.sent_len)
+        self.split_window = split_window
+        self.split_type = split_type
+        
+    def __len__(self):
+        return (len(self.valid_preemb_keys))
+    
+    def __getitem__(self, idx):
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
+            
+        transcriptid = self.sent_len[idx][0]
+        targets = self.targets_df[self.targets_df.transcriptid==transcriptid].iloc[0]
+        
+        # inputs: preembeddings
+        embeddings = self.preembeddings[transcriptid]
+        
+        # all of the following targests are
+        # of type `numpy.float64`
+        sue = targets.sue
+        sest = targets.sest
+        car_0_30 = targets.car_0_30
+        
+        alpha = targets.alpha
+        volatility = targets.volatility
+        mcap = targets.mcap/1e6
+        bm = targets.bm
+        roa = targets.roa
+        debt_asset = targets.debt_asset
+        numest = targets.numest
+        smedest = targets.smedest
+        sstdest = targets.sstdest
+        car_m1_m1 = targets.car_m1_m1
+        car_m2_m2 = targets.car_m2_m2
+        car_m30_m3 = targets.car_m30_m3
+        volume = targets.volume
+        
+        if self.text_in_dataset:
+            return car_0_30, transcriptid, embeddings, alpha, car_m1_m1, car_m2_m2, car_m30_m3, \
+                   sest, sue, numest, sstdest, smedest, \
+                   mcap, roa, bm, debt_asset, volatility, volume
+        else:
+            return torch.tensor(car_0_30,dtype=torch.float32), \
+                   torch.tensor([alpha, car_m1_m1, car_m2_m2, car_m30_m3, sest, sue, numest, sstdest, smedest, mcap, roa, bm, debt_asset, volatility, volume], dtype=torch.float32)
+    
+# Model: position encoder
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, dropout=0.1, max_len=5000):
+        super(PositionalEncoding, self).__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        
+        # pe: (max_len, 1, d_model)
+        pe = pe.unsqueeze(0).transpose(0, 1)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x):
+        x = x + self.pe[:x.size(0), :] # (S, N, E)
+        return self.dropout(x)
+    
+# Model: Base
+class CC(pl.LightningModule):
+    def __init__(self, hparams):
+        super().__init__()
+        
+        self.hparams = hparams
+        # self.text_in_dataset will be filled during instanciating.
+
+    # forward
+    def forward(self):
+        pass
+    
+    # loss
+    def mse_loss(self, y, t):
+        return F.mse_loss(y, t)
+        
+    # validation step
+    def validation_epoch_end(self, outputs):
+        mse = torch.stack([x['val_loss'] for x in outputs]).mean()
+        rmse = torch.sqrt(mse)
+        return {'val_loss': mse, 'log': {'val_rmse': rmse}}
+    
+    # test step
+    def test_epoch_end(self, outputs):
+        mse = torch.stack([x['test_loss'] for x in outputs]).mean()
+        rmse = torch.sqrt(mse)
+
+        return {'test_loss': mse, 'log': {'test_rmse': rmse}, 'progress_bar':{'test_rmse': rmse}}
+    
+    # Dataset
+    def prepare_data(self):
+        self.train_dataset = CCDataset(self.hparams.window, split_type='train', text_in_dataset=self.text_in_dataset,
+                                       roll_type=self.hparams.roll_type, print_window=True)
+        self.val_dataset = CCDataset(self.hparams.window, split_type='val', text_in_dataset=self.text_in_dataset,
                                      roll_type=self.hparams.roll_type, print_window=False)
         self.test_dataset = CCDataset(self.hparams.window, split_type='test', text_in_dataset=self.text_in_dataset, 
                                       roll_type=self.hparams.roll_type, print_window=False)
@@ -1232,6 +1475,9 @@ class CC(pl.LightningModule):
 # %% [markdown]
 # # MLP
 
+# %% [markdown]
+# ## model
+
 # %%
 # FC
 class CCMLP(CC):
@@ -1253,12 +1499,29 @@ class CCMLP(CC):
         self.dropout2 = nn.Dropout(hparams.dropout)
         
         # fc layers
-        self.linear1 = nn.Linear(14, 64)
-        self.linear2 = nn.Linear(64, 64)
-        self.linear3 = nn.Linear(64, 1)
-
+        self.linear1 = nn.Linear(15, 128)
+        self.linear2 = nn.Linear(128, 128)
+        self.linear3 = nn.Linear(128, 1)
+        
+        # batch normalization
+        if hparams.normalize_batch:
+            self.batch_norm = nn.BatchNorm1d(15)
+            
+        # layer normalization
+        if hparams.normalize_layer:
+            self.layer_norm = nn.LayerNorm(15)
+            
     # forward
     def forward(self, inp):
+        
+        # batch normalization
+        if self.hparams.normalize_batch:
+            inp = self.batch_norm(inp)
+            
+        # layer norm
+        if self.hparams.normalize_layer:
+            inp = self.layer_norm(inp)
+        
         x_car = self.dropout1(F.relu(self.linear1(inp)))
         x_car = self.dropout2(F.relu(self.linear2(x_car)))
         y_car = self.linear3(x_car) # (N, 1)
@@ -1308,33 +1571,40 @@ class CCMLP(CC):
         # logging
         return {'test_loss': loss_car}  
 
+# %% [markdown]
+# ## run
+
 # %%
-# loop over 24 windows
-load_split_df()
-load_targets()
+# choose Model
+Model = CCMLP
 
 # model hparams
 model_hparams = {
-    'preembedding_type': 'present_sbert_roberta_nlistsb_encoded',
-    'batch_size': 8192,
-    'val_batch_size': 1,
-    'learning_rate': 3e-4,
+    'preembedding_type': 'present_sbert_roberta_nlistsb_encoded', # key!
+    'targets_name': 'f_sue_keydevid_car_finratio_vol_transcriptid_sim_text', # key!
+    'normalize_batch': True, # key!
+    'normalize_layer': False, # key!
+    'roll_type': '3y',
+    'batch_size': 128,
+    'val_batch_size':2,
+    'learning_rate': 5e-4,
     'task_weight': 1,
-    'dropout': 0.5} # optional
+    'dropout': 0.5,
+} # optional
 
 # train hparams
 train_hparams = {
     # checkpoint & log
-    'note': 'temp',
+    'note': 'temp', # key!
     'checkpoint_path': 'D:\Checkpoints\earnings-call',
     'row_log_interval': 1,
     'save_top_k': 1,
-    'val_check_interval': 0.25,
+    'val_check_interval': 0.95,
 
     # data size
     'overfit_pct': 1,
-    'min_epochs': 0,
-    'max_epochs': 1,
+    'min_epochs': 10,
+    'max_epochs': 50,
     'max_steps': None,
     'accumulate_grad_batches': 1,
 
@@ -1342,26 +1612,34 @@ train_hparams = {
     # The check of patience depends on **how often you compute your val_loss** (`val_check_interval`). 
     # Say you check val every N baches, then `early_stop_callback` will compare to your latest N **baches**.
     # If you compute val_loss every N **epoches**, then `early_stop_callback` will compare to the latest N **epochs**.
-    'early_stop_patience': 5,
+    'early_stop_patience': 8,
 
     # Caution:
     # If set to 1, then save ckpt every 1 epoch
     # If set to 0, then save ckpt on every val!!! (if val improves)
-    'checkpoint_period': 0}
+    'checkpoint_period': 1}
 
 # delete all existing .ckpt files
 refresh_ckpt(train_hparams['checkpoint_path'])
+
+# load split_df
+load_split_df(model_hparams['roll_type'])
     
+# load targets_df
+load_targets(model_hparams['targets_name'])
+
 # loop over 24!
-for window_i in range(len(split_df))[:1]:
+for window_i in range(len(split_df))[4:]:
+    
     # load preembeddings
+    # you have to do this because CCDataset requires it
     load_preembeddings(model_hparams['preembedding_type'])
     
     # train one window
-    train_one(CCMLP, window_i, model_hparams, train_hparams)
+    train_one(Model, window_i, model_hparams, train_hparams)
 
 
-# %% [markdown] toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true
+# %% [markdown] toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true
 # # RNN
 
 # %% [markdown]
@@ -1474,13 +1752,13 @@ load_targets()
 
 # model hparams
 model_hparams = {
-    'preembedding_type': 'all_sbert_roberta_nlistsb_encoded',
-    'batch_size': 8,
-    'val_batch_size': 1,
-    'max_seq_len': 1024, # optional
+    'preembedding_type': 'all_sbert_roberta_nlistsb_encoded', # key
+    'batch_size': 8, # key
+    'val_batch_size': 1, # key
+    
+    'max_seq_len': 1024, 
     'learning_rate': 3e-4,
     'task_weight': 1,
-    'text_in_dataset': True,
 
     'n_layers_encoder': 6,
     'n_head_encoder': 8, # optional
@@ -1673,7 +1951,7 @@ class CCTransformerSTLTxtFr(CC):
         self.model_type = 'transformer'
         self.text_in_dataset = True if self.feature_type!='fin-ratio' else False 
 
-        self.n_covariate = 14
+        self.n_covariate = 15
         
         # positional encoding
         self.encoder_pos = PositionalEncoding(hparams.d_model, hparams.attn_dropout)
@@ -1706,11 +1984,12 @@ class CCTransformerSTLTxtFr(CC):
             
         # batch normalization
         if hparams.normalize_batch:
-            self.batch_norm = nn.BatchNorm1d(hparams.final_tdim+self.n_covariate)
+            self.batch_norm = nn.BatchNorm1d(self.n_covariate)
 
     # forward
     def forward(self, inp, src_key_padding_mask, alpha, car_m1_m1, car_m2_m2, car_m30_m3, sest, sue, numest, sstdest, \
-                mcap, roa, bm, debt_asset, volatility, volume):
+                smedest, mcap, roa, bm, debt_asset, volatility, volume):
+        
         bsz, embed_dim = inp.size(0), inp.size(2)
         
         # if S is longer than max_seq_len, cut
@@ -1732,15 +2011,18 @@ class CCTransformerSTLTxtFr(CC):
         # mix with covariate
         x_expert = self.final_dropout_1(F.relu(self.linear_car_1(x_expert))) # (N, E)
         x_expert = F.relu(self.linear_car_2(x_expert)) # (N, final_tdim)
-        x_final = torch.cat([x_expert, alpha.unsqueeze(-1), car_m1_m1.unsqueeze(-1), car_m2_m2.unsqueeze(-1),
-                             car_m30_m3.unsqueeze(-1), sest.unsqueeze(-1), sue.unsqueeze(-1), numest.unsqueeze(-1),
-                             sstdest.unsqueeze(-1), mcap.unsqueeze(-1), roa.unsqueeze(-1), bm.unsqueeze(-1),
-                             debt_asset.unsqueeze(-1), volatility.unsqueeze(-1), volume.unsqueeze(-1)], dim=-1) # (N, X + final_tdim) where X is the number of covariate (n_covariate)
+        
+        fin_ratio = torch.cat([alpha.unsqueeze(-1), car_m1_m1.unsqueeze(-1), car_m2_m2.unsqueeze(-1),
+                               car_m30_m3.unsqueeze(-1), sest.unsqueeze(-1), sue.unsqueeze(-1), numest.unsqueeze(-1),
+                               sstdest.unsqueeze(-1), smedest.unsqueeze(-1), mcap.unsqueeze(-1), roa.unsqueeze(-1), bm.unsqueeze(-1),
+                               debt_asset.unsqueeze(-1), volatility.unsqueeze(-1), volume.unsqueeze(-1)], dim=-1) # (N, X)
         
         # batch normalization
         if self.hparams.normalize_batch:
-            x_final = self.batch_norm(x_final)
+            fin_ratio = self.batch_norm(fin_ratio)
         
+        x_final = torch.cat([x_expert, fin_ratio], dim=-1) # (N, X + final_tdim) where X is the number of covariate (n_covariate)
+
         # layer normalization
         if self.hparams.normalize_layer:
             x_final = self.layer_norm(x_final)
@@ -1765,7 +2047,7 @@ class CCTransformerSTLTxtFr(CC):
         
         # forward
         y_car = self.forward(embeddings, mask, alpha, car_m1_m1, car_m2_m2, car_m30_m3, sest, sue, numest, sstdest, \
-                             mcap, roa, bm, debt_asset, volatility, volume) # (N, 1)
+                             smedest, mcap, roa, bm, debt_asset, volatility, volume) # (N, 1)
 
         # compute loss
         loss_car = self.mse_loss(y_car, car.unsqueeze(-1)).unsqueeze(-1) # (1,)
@@ -1784,7 +2066,7 @@ class CCTransformerSTLTxtFr(CC):
 
         # forward
         y_car = self.forward(embeddings, mask, alpha, car_m1_m1, car_m2_m2, car_m30_m3, sest, sue, numest, sstdest, \
-                             mcap, roa, bm, debt_asset, volatility, volume) # (N, 1)
+                             smedest, mcap, roa, bm, debt_asset, volatility, volume) # (N, 1)
 
         # compute loss
         loss_car = self.mse_loss(y_car, car.unsqueeze(-1)).unsqueeze(-1) # (1,)
@@ -1802,7 +2084,7 @@ class CCTransformerSTLTxtFr(CC):
         bsz = sue.size(0)
 
         # forward
-        y_car = self.forward(embeddings, mask, alpha, car_m1_m1, car_m2_m2, car_m30_m3, sest, sue, numest, sstdest, \
+        y_car = self.forward(embeddings, mask, alpha, car_m1_m1, car_m2_m2, car_m30_m3, sest, sue, numest, sstdest, smedest,\
                              mcap, roa, bm, debt_asset, volatility, volume) # (N, 1)
 
         # compute loss
@@ -1827,9 +2109,9 @@ model_hparams = {
     'batch_size': 20,
     'val_batch_size': 4,
     'max_seq_len': 768, 
-    'learning_rate': 2.5e-4,
+    'learning_rate': 1e-4,
     'task_weight': 1,
-    'normalize_layer': False,
+    'normalize_layer': True,
     'normalize_batch': True,
 
     'n_layers_encoder': 4,
@@ -1878,7 +2160,7 @@ load_split_df(model_hparams['roll_type'])
 load_targets(model_hparams['targets_name'])
 
 # loop over 24!
-for window_i in range(len(split_df))[:2]:
+for window_i in range(len(split_df)):
     # load preembeddings
     load_preembeddings(model_hparams['preembedding_type'])
 
@@ -1891,6 +2173,16 @@ for window_i in range(len(split_df))[:2]:
 
 # %%
 # test on one batch
+def test_step_fr(model, batch):
+    car, inp = batch
+
+    # forward
+    y_car = self.forward(inp) # (N, 1)
+    
+    
+    
+    
+    
 def test_step_text(model, batch):
     car, transcriptid, embeddings, mask, alpha, car_m1_m1, car_m2_m2, car_m30_m3,\
     sest, sue, numest, sstdest, smedest, \
@@ -1910,7 +2202,7 @@ def test_step_text_fr(model, batch):
 
     # forward
     y_car = model(embeddings, mask, alpha, car_m1_m1, car_m2_m2, car_m30_m3, sest, sue, numest, sstdest, \
-                  mcap, roa, bm, debt_asset, volatility, volume).item() # (N, 1)
+                  smedest, mcap, roa, bm, debt_asset, volatility, volume).item() # (N, 1)
     transcriptid = transcriptid.int().item()
     docid = targets_df.loc[targets_df.transcriptid==transcriptid].docid.iloc[0]
 
@@ -1979,9 +2271,9 @@ def get_car_ranking_predict():
 
 # %%
 hparams = {
-    'Model': CCTransformerSTLTxtFr,
-    'ckpt_folder': '3y-TSFM-stl-text-fr',
-    'save_name': 'car_ranking_3y_text_fr',
+    'Model': CCMLP, # key!
+    'ckpt_folder': '3y-MLP-fr-val', # key!
+    'save_name': 'car_ranking_3y_MLP_fr_val', # key!
 
     'targets_name': 'f_sue_keydevid_car_finratio_vol_transcriptid_sim_text',
     'preembedding_type': 'all_sbert_roberta_nlistsb_encoded',
@@ -2003,12 +2295,12 @@ car_ranking_predict = get_car_ranking_predict()
 
 # %%
 query = ((comet_ml.api.Metric('test_rmse')!=None) &
-         (comet_ml.api.Parameter('note')=='temp'))
+         (comet_ml.api.Parameter('note')=='3y-MLP-fin-ratio-val'))
 
 exps = comet_ml.api.API().query('amiao', 'earnings-call', query, archived=False)
 
 for exp in exps:
-    exp.log_parameter('note', '3y-TSFM-stl-text-fr')
+    exp.log_parameter('note', '3y-MLP-fr-val')
 
 # %% [markdown]
 # **Task:**
