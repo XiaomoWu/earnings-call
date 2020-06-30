@@ -13,6 +13,10 @@
 
 // folders
 neat-vision
+/__pycache__
+/xiao/data
+/xiao/checkpoint
+/yifan
 /.data
 /.ipynb_checkpoints
 /writing
