@@ -684,12 +684,12 @@ Model = CCTransformerSTLTxtFr
 # hparams
 model_hparams = {
     'preembedding_type': 'all_sbert_roberta_nlistsb_encoded', # key!
-    'targets_name': 'f_sue_keydevid_car_finratio_vol_transcriptid_sim_inflow_revision_text', # key!
+    'targets_name': 'f_sue_keydevid_car_finratio_vol_transcriptid_sim_inflow_revision_text_norm', # key!
     'roll_type': '3y',  # key!
-    'batch_size': 20,
+    'batch_size': 48,
     'val_batch_size': 4,
-    'max_seq_len': 768, 
-    'learning_rate': 3e-4,
+    'max_seq_len': 1024, 
+    'learning_rate': 1e-4,
     'task_weight': 1,
     'normalize_layer': False, # key!
     'normalize_batch': True, # key!
@@ -706,16 +706,16 @@ model_hparams = {
 
 train_hparams = {
     # log
-    'note': 'temp',
+    'note': '3y-TSFM-txt-fr-norm',
     'row_log_interval': 1,
     'save_top_k': 1,
     'val_check_interval': 0.2,
-    'machine': 'yu-workstation',
+    'machine': 'ASU',
 
     # data size
     'overfit_batches': 0.0,
     'min_epochs': 3,
-    'max_epochs': 1,
+    'max_epochs': 20,
     'max_steps': None,
     'accumulate_grad_batches': 1,
 
@@ -723,7 +723,7 @@ train_hparams = {
     # The check of patience depends on **how often you compute your val_loss** (`val_check_interval`). 
     # Say you check val every N baches, then `early_stop_callback` will compare to your latest N **baches**.
     # If you compute val_loss every N **epoches**, then `early_stop_callback` will compare to the latest N **epochs**.
-    'early_stop_patience': 5,
+    'early_stop_patience': 8,
 
     # Caution:
     # If set to 1, then save ckpt every 1 epoch
@@ -743,7 +743,9 @@ load_targets(model_hparams['targets_name'])
 load_preembeddings(model_hparams['preembedding_type'])
     
 # loop over 24!
-for window_i in range(len(split_df))[:1]:
+for window_i in range(len(split_df)):
 
     # train one window
     train_one(Model, window_i, model_hparams, train_hparams)
+
+# %%
