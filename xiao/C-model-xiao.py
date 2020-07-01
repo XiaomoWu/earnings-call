@@ -66,67 +66,6 @@ class Now:
     def __repr__(self):
         return self.current_datetime.strftime('%H:%M:%S')    
 
-
-def unique(seq: 'tuple or list') -> list:
-    '''remove duplicate while keeping original order
-    '''
-    seen = set()
-    seen_add = seen.add
-    return [x for x in seq if not (x in seen or seen_add(x))]
-
-def uniqueN(seq: 'tuple or list') -> list:
-    '''remove duplicate while keeping original order
-    '''
-    return len(unique(seq))
-
-def chunks(l, n):
-    """Yield successive n-sized chunks from l."""
-    for i in range(0, len(l), n):
-        yield l[i:i + n]
-
-def sv(objname: str, savename: str = None, path='./data', log=True):
-    '''
-    log: output success messsage at the end
-    '''
-    assert isinstance(objname, str)
-    if savename is None:
-        savename = objname
-    save_path = f"{path}/{savename}.pkl"
-    obj = globals()[objname]
-    with open(save_path, 'wb') as f:
-        pickle.dump(obj, f)
-    if log is True:
-        if savename == objname:
-            print(f'-{objname}- saved')
-        else:
-            print(f'-{objname}- saved as -{savename}-')
-    
-def ld(filename: str, objname=None, path='./data', force=False, log=True):
-    assert isinstance(filename, str)
-    load_path = f"{path}/{filename}.pkl"
-    if objname is None:
-        objname = filename
-    
-    # create objname in globals()
-    if_exists = objname in globals()
-    if if_exists == False:
-        with open(load_path, 'rb') as f:
-            varval = pickle.load(f)
-        globals()[objname] = varval
-        if log is True:
-            if filename == objname:
-                print(f'-{filename}- loaded')
-            else:
-                print(f'-{filename}- loaded as -{objname}-')
-    elif if_exists == True:
-        if force==False:
-            print(f'-{objname}- already exists, will not load again!')
-        elif force==True:
-            with open(load_path, 'rb') as f:
-                varval = pickle.load(f)
-            globals()[objname] = varval
-            print(f'-{filename}- loaded as -{objname}- (forced)')
-
 # working directory
 ROOT_DIR = '.'
 DATA_DIR = f'{ROOT_DIR}/data'
@@ -203,16 +142,21 @@ def refresh_cuda_memory():
     torch.cuda.empty_cache()
 
 # helper: flush chpt
-def refresh_ckpt(ckpt_path):
+def refresh_ckpt():
     '''
     move all `.ckpt` files to `/temp`
     '''
-    # create ckpt temp if not exist
-    if not os.path.exists(f'{ckpt_path}/temp/'):
-        os.makedirs(f'{ckpt_path}/temp/')
-    for name in os.listdir(ckpt_path):
+    # create ckpt_dir if not exists
+    if not os.path.exists(CHECKPOINT_DIR):
+        os.makedirs(CHECKPOINT_DIR)
+    
+    # create ckpt_temp_dir if not exists
+    if not os.path.exists(CHECKPOINT_TEMP_DIR):
+        os.makedirs(CHECKPOINT_TEMP_DIR)
+        
+    for name in os.listdir(CHECKPOINT_DIR):
         if name.endswith('.ckpt'):
-            shutil.move(f'{ckpt_path}/{name}', f'{ckpt_path}/temp/{name}')
+            shutil.move(f'{CHECKPOINT_DIR}/{name}', f'{CHECKPOINT_DIR}/temp/{name}')
 
 # helpers: load targets
 def load_targets(targets_name):
@@ -238,13 +182,12 @@ def load_split_df(roll_type):
 # %%
 # loop one
 def train_one(Model, window_i, model_hparams, train_hparams):
-    global split_df, targets_df
     
     # set window
     model_hparams.update({'window': split_df.iloc[window_i].window})
     
     # init model
-    model = Model(Namespace(**model_hparams))
+    model = Model(model_hparams)
 
     # get model type
     train_hparams['task_type'] = model.task_type
@@ -255,17 +198,17 @@ def train_one(Model, window_i, model_hparams, train_hparams):
     # checkpoint
     ckpt_prefix = f"{train_hparams['model_type']}_{model_hparams['window']}_"
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
-        verbose=False,
+        verbose=True,
         mode='min',
         monitor='val_loss',
+        filepath=CHECKPOINT_DIR,
         prefix=ckpt_prefix,
-        filepath=train_hparams['checkpoint_path'],
         save_top_k=train_hparams['save_top_k'],
         period=train_hparams['checkpoint_period'])
 
     # logger
     logger = pl.loggers.CometLogger(
-        api_key='tOoHzzV1S039683RxEr2Hl9PX',
+        api_key=COMET_API_KEY,
         save_dir='/data/logs',
         project_name='earnings-call',
         experiment_name=model_hparams['window'],
@@ -275,17 +218,16 @@ def train_one(Model, window_i, model_hparams, train_hparams):
     # early stop
     early_stop_callback = pl.callbacks.EarlyStopping(
         monitor='val_loss',
-        min_delta=0.1,
+        min_delta=0,
         patience=train_hparams['early_stop_patience'],
         verbose=False,
         mode='min')
 
     # trainer
-    trainer = pl.Trainer(gpus=[0, 1],
-                         default_root_dir=train_hparams['checkpoint_path'], 
+    trainer = pl.Trainer(gpus=-1, 
                          checkpoint_callback=checkpoint_callback, 
                          early_stop_callback=early_stop_callback,
-                         overfit_pct=train_hparams['overfit_pct'], 
+                         overfit_batches=train_hparams['overfit_batches'], 
                          row_log_interval=train_hparams['row_log_interval'],
                          val_check_interval=train_hparams['val_check_interval'], 
                          progress_bar_refresh_rate=2, 
@@ -324,16 +266,8 @@ def train_one(Model, window_i, model_hparams, train_hparams):
         # train the model
         trainer.fit(model)
 
-        # load back the best model 
-        best_model_name = sorted([f"{train_hparams['checkpoint_path']}/{model_name}" 
-                                  for model_name in os.listdir(train_hparams['checkpoint_path']) 
-                                  if model_name.startswith(ckpt_prefix)])[-1]
-        print(f'loading best model: {best_model_name}')
-        best_model = Model.load_from_checkpoint(best_model_name)
-        best_model.freeze()
-
         # test on the best model
-        trainer.test(best_model, test_dataloaders=model.test_dataloader())
+        trainer.test(ckpt_path='best')
 
     except RuntimeError as e:
         raise e
@@ -350,7 +284,7 @@ def train_one(Model, window_i, model_hparams, train_hparams):
 # Dataset: Txt + Fin-ratio
 class CCDataset(Dataset):
     
-    def __init__(self, split_window, split_type, text_in_dataset, roll_type, print_window, valid_transcriptids=None, transform=None):
+    def __init__(self, split_window, split_type, text_in_dataset, roll_type, print_window, preembeddings, targets_df, split_df, valid_transcriptids=None):
         '''
         Args:
             preembeddings (from globals): list of embeddings. Each element is a tensor (S, E) where S is number of sentences in a call
@@ -362,11 +296,6 @@ class CCDataset(Dataset):
             transcriptids: list. If provided, only the given transcripts will be used in generating the Dataset. `transcriptids` is applied **on top of** `split_window` and `split_type`
         '''
 
-        self.text_in_dataset = text_in_dataset
-        
-        # decalre data as globals so don't   need to create/reload
-        global preembeddings, targets_df, split_df
-        
         # get split dates from `split_df`
         _, train_start, train_end, test_start, test_end, _ = tuple(split_df.loc[(split_df.window==split_window) & (split_df.roll_type==roll_type)].iloc[0])
         # print current window
@@ -396,9 +325,10 @@ class CCDataset(Dataset):
             self.valid_preemb_keys = self.valid_preemb_keys.intersection(set(valid_transcriptids))
         
         # self attributes
+        self.text_in_dataset = text_in_dataset
+        if text_in_dataset:
+            self.preembeddings = preembeddings
         self.targets_df = targets_df
-        self.preembeddings = preembeddings
-        self.transform = transform
         self.sent_len = sorted([(k, preembeddings[k].shape[0]) for k in self.valid_preemb_keys], key=itemgetter(1))
         self.train_start = train_start
         self.train_end = train_end
@@ -418,9 +348,6 @@ class CCDataset(Dataset):
         transcriptid = self.sent_len[idx][0]
         targets = self.targets_df[self.targets_df.transcriptid==transcriptid].iloc[0]
         
-        # inputs: preembeddings
-        embeddings = self.preembeddings[transcriptid]
-        
         # all of the following targests are
         # of type `numpy.float64`
         docid = targets.docid
@@ -428,6 +355,7 @@ class CCDataset(Dataset):
         sue = targets.sue
         sest = targets.sest
         car_0_30 = targets.car_0_30
+        car_0_30_norm = targets.car_0_30_norm
         
         alpha = targets.alpha
         volatility = targets.volatility
@@ -443,15 +371,22 @@ class CCDataset(Dataset):
         car_m30_m3 = targets.car_m30_m3
         volume = targets.volume
         revision = targets.revision
-        inflow = targets.inflow/1e3
+        revision_norm = targets.revision_norm
+        inflow = targets.inflow
+        inflow_norm = targets.inflow_norm
         
         if self.text_in_dataset:
-            return car_0_30, transcriptid, embeddings, alpha, car_m1_m1, car_m2_m2, car_m30_m3, \
-                   sest, sue, numest, sstdest, smedest, \
-                   mcap, roa, bm, debt_asset, volatility, volume, inflow, revision
+            # inputs: preembeddings
+            embeddings = self.preembeddings[transcriptid]
+            
+            # by now the returns are np.array
+            return car_0_30, car_0_30_norm, inflow, inflow_norm, revision, revision_norm, \
+                   transcriptid, embeddings, \
+                   [alpha, car_m1_m1, car_m2_m2, car_m30_m3, sest, sue, numest, sstdest, smedest, mcap, roa, bm, debt_asset, volatility, volume]
         else:
             return docid, \
                    torch.tensor(car_0_30,dtype=torch.float32), \
+                   torch.tensor(car_0_30_norm,dtype=torch.float32), \
                    torch.tensor([alpha, car_m1_m1, car_m2_m2, car_m30_m3, sest, sue, numest, sstdest, smedest, mcap, roa, bm, debt_asset, volatility, volume], dtype=torch.float32)
 
 
@@ -484,8 +419,13 @@ class CC(pl.LightningModule):
     def __init__(self, hparams):
         super().__init__()
         
-        self.hparams = hparams
+        self.hparams = Namespace(**hparams)
         # self.text_in_dataset will be filled during instanciating.
+        
+        global preembeddings, targets_df, split_df
+        self.preembeddings = preembeddings
+        self.targets_df = targets_df
+        self.split_df = split_df
 
     # forward
     def forward(self):
@@ -510,12 +450,16 @@ class CC(pl.LightningModule):
     
     # Dataset
     def prepare_data(self):
+        
         self.train_dataset = CCDataset(self.hparams.window, split_type='train', text_in_dataset=self.text_in_dataset,
-                                       roll_type=self.hparams.roll_type, print_window=True)
+                                       roll_type=self.hparams.roll_type, print_window=True, preembeddings=self.preembeddings,
+                                       targets_df=self.targets_df, split_df=self.split_df)
         self.val_dataset = CCDataset(self.hparams.window, split_type='val', text_in_dataset=self.text_in_dataset,
-                                     roll_type=self.hparams.roll_type, print_window=False)
+                                     roll_type=self.hparams.roll_type, print_window=False, preembeddings=self.preembeddings,
+                                       targets_df=self.targets_df, split_df=self.split_df)
         self.test_dataset = CCDataset(self.hparams.window, split_type='test', text_in_dataset=self.text_in_dataset, 
-                                      roll_type=self.hparams.roll_type, print_window=False)
+                                      roll_type=self.hparams.roll_type, print_window=False, preembeddings=self.preembeddings,
+                                       targets_df=self.targets_df, split_df=self.split_df)
 
     # DataLoader
     def train_dataloader(self):
@@ -546,10 +490,11 @@ class CC(pl.LightningModule):
             mask: tensor, (N, S)
             sue,car,selead,sest: tensor, (N,)
         '''
+        
         # embeddings: (N, S, E)
-        car_0_30, transcriptid, embeddings, alpha, car_m1_m1, car_m2_m2, car_m30_m3, \
-        sest, sue, numest, sstdest, smedest, \
-        mcap, roa, bm, debt_asset, volatility, volume, inflow, revision = zip(*data)
+        car_0_30, car_0_30_norm, inflow, inflow_norm, revision, revision_norm, \
+        transcriptid, embeddings, \
+        fin_ratios = zip(*data)
             
         # pad sequence
         # the number of `padding_value` is irrelevant, since we'll 
@@ -563,18 +508,12 @@ class CC(pl.LightningModule):
         for i, length in enumerate(valid_seq_len):
             mask[i, :length] = 0
         mask = mask == 1
-
-        return torch.tensor(car_0_30, dtype=torch.float32), torch.tensor(transcriptid, dtype=torch.float32), \
-               embeddings.float(), mask, \
-               torch.tensor(alpha, dtype=torch.float32), torch.tensor(car_m1_m1, dtype=torch.float32), \
-               torch.tensor(car_m2_m2, dtype=torch.float32), torch.tensor(car_m30_m3, dtype=torch.float32), \
-               torch.tensor(sest, dtype=torch.float32), torch.tensor(sue, dtype=torch.float32), \
-               torch.tensor(numest, dtype=torch.float32), torch.tensor(sstdest, dtype=torch.float32), \
-               torch.tensor(smedest, dtype=torch.float32), torch.tensor(mcap, dtype=torch.float32), \
-               torch.tensor(roa, dtype=torch.float32), torch.tensor(bm, dtype=torch.float32), \
-               torch.tensor(debt_asset, dtype=torch.float32), torch.tensor(volatility, dtype=torch.float32), \
-               torch.tensor(volume, dtype=torch.float32), torch.tensor(inflow, dtype=torch.float32), \
-               torch.tensor(revision, dtype=torch.float32)
+        
+        return torch.tensor(car_0_30, dtype=torch.float32), torch.tensor(car_0_30_norm, dtype=torch.float32), \
+               torch.tensor(inflow, dtype=torch.float32), torch.tensor(inflow_norm, dtype=torch.float32), \
+               torch.tensor(revision, dtype=torch.float32), torch.tensor(revision_norm, dtype=torch.float32), \
+               torch.tensor(transcriptid, dtype=torch.float32), embeddings.float(), mask, \
+               torch.tensor(fin_ratios, dtype=torch.float32)
         
     # optimizer
     def configure_optimizers(self):
@@ -583,19 +522,21 @@ class CC(pl.LightningModule):
 
 
 # %% [markdown]
-# # Transformer
+# # STL
+
+# %% [markdown]
+# ## model
 
 # %%
-# MTL-text-fr-Inf
-class CCTransformerMTLInf(CC):
+# STL-text-fr-MLP
+class CCTransformerSTLTxtFr(CC):
     def __init__(self, hparams):
+        # `self.hparams` will be created by super().__init__
         super().__init__(hparams)
         
-        self.hparams = hparams
-        
         # specify model type
-        self.task_type = 'mtl'
-        self.feature_type = 'text + fin-ratio + (inf)'
+        self.task_type = 'single'
+        self.feature_type = 'text + fin-ratio'
         self.attn_type = 'dotprod'
         self.model_type = 'transformer'
         self.text_in_dataset = True if self.feature_type!='fin-ratio' else False 
@@ -603,60 +544,56 @@ class CCTransformerMTLInf(CC):
         self.n_covariate = 15
         
         # positional encoding
-        self.encoder_pos = PositionalEncoding(hparams.d_model, hparams.attn_dropout)
+        self.encoder_pos = PositionalEncoding(self.hparams.d_model, self.hparams.attn_dropout)
         
         # encoder layers for input, expert, nonexpert
-        encoder_layers_expert = nn.TransformerEncoderLayer(hparams.d_model, hparams.n_head_encoder, hparams.dff, hparams.attn_dropout)
+        encoder_layers_expert = nn.TransformerEncoderLayer(self.hparams.d_model, self.hparams.n_head_encoder, self.hparams.dff, self.hparams.attn_dropout)
         
-        # atten layers
-        self.attn_layers_car = nn.Linear(hparams.d_model, 1)
-        self.attn_dropout_1 = nn.Dropout(hparams.attn_dropout)
+        # atten layers for SUE, CAR, SELEAD, SEST
+        self.attn_layers_car = nn.Linear(self.hparams.d_model, 1)
+        self.attn_dropout_1 = nn.Dropout(self.hparams.attn_dropout)
         
-        # Build Encoder
-        self.encoder_expert = nn.TransformerEncoder(encoder_layers_expert, hparams.n_layers_encoder)
+        # Build Encoder and Decoder
+        self.encoder_expert = nn.TransformerEncoder(encoder_layers_expert, self.hparams.n_layers_encoder)
         
         # linear layer to produce final result
-        self.linear_car_1 = nn.Linear(hparams.d_model, hparams.d_model)
-        self.linear_car_2 = nn.Linear(hparams.d_model, hparams.final_tdim)
-        self.linear_car_3 = nn.Linear(hparams.final_tdim+self.n_covariate, hparams.final_tdim+self.n_covariate)
-        self.linear_car_4 = nn.Linear(hparams.final_tdim+self.n_covariate, hparams.final_tdim+self.n_covariate)
-        self.linear_car_5 = nn.Linear(hparams.final_tdim+self.n_covariate, 1)
-        
-        self.linear_inflow = nn.Linear(hparams.final_tdim, 1)
-        # self.linear_revision = nn.Linear(hparam.final_tdim, 1)
+        self.linear_car_1 = nn.Linear(self.hparams.d_model, self.hparams.d_model)
+        self.linear_car_2 = nn.Linear(self.hparams.d_model, self.hparams.final_tdim)
+        self.linear_car_3 = nn.Linear(self.hparams.final_tdim+self.n_covariate, self.hparams.final_tdim+self.n_covariate)
+        self.linear_car_4 = nn.Linear(self.hparams.final_tdim+self.n_covariate, self.hparams.final_tdim+self.n_covariate)
+        self.linear_car_5 = nn.Linear(self.hparams.final_tdim+self.n_covariate, 1)
         
         # dropout for final fc layers
-        self.final_dropout_1 = nn.Dropout(hparams.dropout)
-        self.final_dropout_2 = nn.Dropout(hparams.dropout)
-        self.final_dropout_3 = nn.Dropout(hparams.dropout)
+        self.final_dropout_1 = nn.Dropout(self.hparams.dropout)
+        self.final_dropout_2 = nn.Dropout(self.hparams.dropout)
+        self.final_dropout_3 = nn.Dropout(self.hparams.dropout)
         
         # layer normalization
-        if hparams.normalize_layer:
-            self.layer_norm = nn.LayerNorm(hparams.final_tdim+self.n_covariate)
+        if self.hparams.normalize_layer:
+            self.layer_norm = nn.LayerNorm(self.hparams.final_tdim+self.n_covariate)
             
         # batch normalization
-        if hparams.normalize_batch:
+        if self.hparams.normalize_batch:
             self.batch_norm = nn.BatchNorm1d(self.n_covariate)
 
     # forward
-    def forward(self, inp, src_key_padding_mask, alpha, car_m1_m1, car_m2_m2, car_m30_m3, sest, sue, numest, sstdest, \
-                smedest, mcap, roa, bm, debt_asset, volatility, volume):
+    def forward(self, embeddings, src_key_padding_mask, fin_ratios):
         
-        bsz, embed_dim = inp.size(0), inp.size(2)
+        bsz, embed_dim = embeddings.size(0), embeddings.size(2)
         
         # if S is longer than max_seq_len, cut
-        inp = inp[:,:self.hparams.max_seq_len,] # (N, S, E)
+        embeddings = embeddings[:,:self.hparams.max_seq_len,] # (N, S, E)
         src_key_padding_mask = src_key_padding_mask[:,:self.hparams.max_seq_len] # (N, S)
         
-        inp = inp.transpose(0, 1) # (S, N, E)
+        embeddings = embeddings.transpose(0, 1) # (S, N, E)
         
         # positional encoding
-        x = self.encoder_pos(inp) # (S, N, E)
+        x = self.encoder_pos(embeddings) # (S, N, E)
         
         # encode
         x_expert = self.encoder_expert(x, src_key_padding_mask=src_key_padding_mask).transpose(0,1) # (N, S, E)
         
-        # multiply with attn
+        # decode with attn
         x_attn = self.attn_dropout_1(F.softmax(self.attn_layers_car(x_expert), dim=1)) # (N, S, 1)
         x_expert = torch.bmm(x_expert.transpose(-1,-2), x_attn).squeeze(-1) # (N, E)
         
@@ -664,139 +601,101 @@ class CCTransformerMTLInf(CC):
         x_expert = self.final_dropout_1(F.relu(self.linear_car_1(x_expert))) # (N, E)
         x_expert = F.relu(self.linear_car_2(x_expert)) # (N, final_tdim)
         
-        fin_ratio = torch.cat([alpha.unsqueeze(-1), car_m1_m1.unsqueeze(-1), car_m2_m2.unsqueeze(-1),
-                               car_m30_m3.unsqueeze(-1), sest.unsqueeze(-1), sue.unsqueeze(-1), numest.unsqueeze(-1),
-                               sstdest.unsqueeze(-1), smedest.unsqueeze(-1), mcap.unsqueeze(-1), roa.unsqueeze(-1), bm.unsqueeze(-1),
-                               debt_asset.unsqueeze(-1), volatility.unsqueeze(-1), volume.unsqueeze(-1)], dim=-1) # (N, X)
-        
         # batch normalization
         if self.hparams.normalize_batch:
-            fin_ratio = self.batch_norm(fin_ratio)
+            fin_ratios = self.batch_norm(fin_ratios)
         
-        x_car = torch.cat([x_expert, fin_ratio], dim=-1) # (N, X + final_tdim) where X is the number of covariate (n_covariate)
+        x_final = torch.cat([x_expert, fin_ratios], dim=-1) # (N, X + final_tdim) where X is the number of covariate (n_covariate)
 
+        # layer normalization
+        if self.hparams.normalize_layer:
+            x_final = self.layer_norm(x_final)
             
         # final FC
-        y_inflow = self.linear_inflow(x_expert)
-        # y_revision = self.linear_revision(x_expert)
-        
-        x_car = self.final_dropout_2(F.relu(self.linear_car_3(x_car))) # (N, X + final_tdim)
-        y_car = self.linear_car_5(x_car) # (N,1)
+        x_final = self.final_dropout_2(F.relu(self.linear_car_3(x_final))) # (N, X + final_tdim)
+        x_final = self.final_dropout_3(F.relu(self.linear_car_4(x_final))) # (N, X + final_tdim)
+        y_car = self.linear_car_5(x_final) # (N,1)
         
         # final output
-        return y_car, y_inflow
+        return y_car
     
     # traning step
     def training_step(self, batch, idx):
-        
-        car, transcriptid, embeddings, mask, alpha, car_m1_m1, car_m2_m2, car_m30_m3,\
-        sest, sue, numest, sstdest, smedest, \
-        mcap, roa, bm, debt_asset, volatility, volume, inflow, revision = batch
+        car, car_norm, inflow, inflow_norm, revision, revision_norm, \
+        transcriptid, embeddings, mask, \
+        fin_ratios = batch
         
         # get batch size
-        bsz = sue.size(0)
+        bsz = fin_ratios.size(0)
         
         # forward
-        y_car, y_inflow = self.forward(embeddings, mask, alpha, car_m1_m1, car_m2_m2, car_m30_m3, sest, sue, numest, sstdest, \
-                             smedest, mcap, roa, bm, debt_asset, volatility, volume) # (N, 1)
-        
+        y_car = self.forward(embeddings, mask, fin_ratios) # (N, 1)
+
         # compute loss
-        loss_car = self.mse_loss(y_car, car.unsqueeze(-1)).unsqueeze(-1) # (1,)
-        loss_inflow = self.mse_loss(y_inflow, inflow.unsqueeze(-1)).unsqueeze(-1) # (1,)
-        
-        loss = loss_car + loss_inflow
+        loss_car = self.mse_loss(y_car, car_norm.unsqueeze(-1)).unsqueeze(-1) # (1,)
         
         # logging
-        return {'loss': loss, 'log': {'train_loss': loss}}
+        return {'loss': loss_car, 'log': {'train_loss': loss_car}}
         
     # validation step
     def validation_step(self, batch, idx):
-        car, transcriptid, embeddings, mask, alpha, car_m1_m1, car_m2_m2, car_m30_m3,\
-        sest, sue, numest, sstdest, smedest, \
-        mcap, roa, bm, debt_asset, volatility, volume, inflow, revision = batch
+        car, car_norm, inflow, inflow_norm, revision, revision_norm, \
+        transcriptid, embeddings, mask, \
+        fin_ratios = batch
         
         # get batch size
-        bsz = sue.size(0)
+        bsz = fin_ratios.size(0)
 
         # forward
-        y_car, y_inflow = self.forward(embeddings, mask, alpha, car_m1_m1, car_m2_m2, car_m30_m3, sest, sue, numest, sstdest, \
-                             smedest, mcap, roa, bm, debt_asset, volatility, volume) # (N, 1)
+        y_car = self.forward(embeddings, mask, fin_ratios) # (N, 1)
 
         # compute loss
-        loss_car = self.mse_loss(y_car, car.unsqueeze(-1)).unsqueeze(-1) # (1,)
-        loss_inflow = self.mse_loss(y_inflow, inflow.unsqueeze(-1)).unsqueeze(-1) # (1,)
-        loss = loss_car + loss_inflow
-        
+        loss_car = self.mse_loss(y_car, car_norm.unsqueeze(-1)).unsqueeze(-1) # (1,)
+
         # logging
-        return {'val_car_loss': loss_car, 'val_inflow_loss': loss_inflow, 'val_loss': loss}
+        return {'val_loss': loss_car}
 
     # test step
     def test_step(self, batch, idx):
-        car, transcriptid, embeddings, mask, alpha, car_m1_m1, car_m2_m2, car_m30_m3,\
-        sest, sue, numest, sstdest, smedest, \
-        mcap, roa, bm, debt_asset, volatility, volume, inflow, revision = batch
+        car, car_norm, inflow, inflow_norm, revision, revision_norm, \
+        transcriptid, embeddings, mask, \
+        fin_ratios = batch
         
         # get batch size
-        bsz = sue.size(0)
+        bsz = fin_ratios.size(0)
 
         # forward
-        y_car, y_inflow = self.forward(embeddings, mask, alpha, car_m1_m1, car_m2_m2, car_m30_m3, sest, sue, numest, sstdest, smedest,\
-                             mcap, roa, bm, debt_asset, volatility, volume) # (N, 1)
+        y_car = self.forward(embeddings, mask, fin_ratios) # (N, 1)
 
         # compute loss
-        loss_car = self.mse_loss(y_car, car.unsqueeze(-1)).unsqueeze(-1) # (1,)
-        loss_inflow = self.mse_loss(y_inflow, inflow.unsqueeze(-1)).unsqueeze(-1) # (1,)
-        loss = loss_car + loss_inflow
+        loss_car = self.mse_loss(y_car, car_norm.unsqueeze(-1)).unsqueeze(-1) # (1,)
 
         # logging
-        return {'test_car_loss': loss_car, 'test_inflow_loss': loss_inflow, 'test_loss': loss}  
-    
-    # epoch_end
-    def validation_epoch_end(self, outputs):
-        mse = torch.stack([x['val_loss'] for x in outputs]).mean()
-        mse_car = torch.stack([x['val_car_loss'] for x in outputs]).mean()
-        mse_inflow = torch.stack([x['val_inflow_loss'] for x in outputs]).mean()
-        
-        rmse = torch.sqrt(mse)
-        rmse_car = torch.sqrt(mse_car)
-        rmse_inflow = torch.sqrt(mse_inflow)
-        
-        return {'val_loss': mse, 'log': {'val_rmse': rmse, 'val_car_rmse': rmse_car, 'val_inflow_rmse': rmse_inflow}}
-    
-    # test step
-    def test_epoch_end(self, outputs):
-        mse = torch.stack([x['test_loss'] for x in outputs]).mean()
-        mse_car = torch.stack([x['test_car_loss'] for x in outputs]).mean()
-        mse_inflow = torch.stack([x['test_inflow_loss'] for x in outputs]).mean()
-        
-        rmse = torch.sqrt(mse)
-        rmse_car = torch.sqrt(mse_car)
-        rmse_inflow = torch.sqrt(mse_inflow)
-        
+        return {'test_loss': loss_car}  
 
-        return {'test_loss': mse, 'log': {'test_rmse': rmse, 'test_car_rmse': rmse_car, 'test_inflow_rmse': rmse_inflow}}        
 
 # %% [markdown]
 # ## run
 
 # %%
 # choose Model
-Model = CCTransformerMTLInf
+Model = CCTransformerSTLTxtFr
 
 # hparams
 model_hparams = {
     'preembedding_type': 'all_sbert_roberta_nlistsb_encoded', # key!
     'targets_name': 'f_sue_keydevid_car_finratio_vol_transcriptid_sim_inflow_revision_text', # key!
     'roll_type': '3y',  # key!
-    'batch_size': 32,
+    'batch_size': 20,
     'val_batch_size': 4,
     'max_seq_len': 768, 
     'learning_rate': 3e-4,
     'task_weight': 1,
     'normalize_layer': False, # key!
     'normalize_batch': True, # key!
+    'normalize_target': True,
 
-    'n_layers_encoder': 6,
+    'n_layers_encoder': 4,
     'n_head_encoder': 8, 
     'd_model': 1024,
     'final_tdim': 1024, 
@@ -808,15 +707,15 @@ model_hparams = {
 train_hparams = {
     # log
     'note': 'temp',
-    'checkpoint_path': CHECKPOINT_DIR,
     'row_log_interval': 1,
     'save_top_k': 1,
     'val_check_interval': 0.2,
+    'machine': 'yu-workstation',
 
     # data size
-    'overfit_pct': 1,
+    'overfit_batches': 0.0,
     'min_epochs': 3,
-    'max_epochs': 25,
+    'max_epochs': 1,
     'max_steps': None,
     'accumulate_grad_batches': 1,
 
@@ -824,7 +723,7 @@ train_hparams = {
     # The check of patience depends on **how often you compute your val_loss** (`val_check_interval`). 
     # Say you check val every N baches, then `early_stop_callback` will compare to your latest N **baches**.
     # If you compute val_loss every N **epoches**, then `early_stop_callback` will compare to the latest N **epochs**.
-    'early_stop_patience': 10,
+    'early_stop_patience': 5,
 
     # Caution:
     # If set to 1, then save ckpt every 1 epoch
@@ -832,7 +731,7 @@ train_hparams = {
     'checkpoint_period': 0}
 
 # delete all existing .ckpt files
-refresh_ckpt(train_hparams['checkpoint_path'])
+refresh_ckpt()
 
 # load split_df
 load_split_df(model_hparams['roll_type'])
@@ -840,12 +739,11 @@ load_split_df(model_hparams['roll_type'])
 # load targets_df
 load_targets(model_hparams['targets_name'])
 
+# load preembeddings
+load_preembeddings(model_hparams['preembedding_type'])
+    
 # loop over 24!
-for window_i in range(len(split_df)):
-    # load preembeddings
-    load_preembeddings(model_hparams['preembedding_type'])
+for window_i in range(len(split_df))[:1]:
 
     # train one window
     train_one(Model, window_i, model_hparams, train_hparams)
-
-# %%
