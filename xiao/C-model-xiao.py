@@ -257,6 +257,12 @@ def train_one(Model, window_i, model_hparams, train_hparams):
     # upload hparams
     logger.experiment.log_parameters(model_hparams)
     logger.experiment.log_parameters(train_hparams)
+    
+    # If run on ASU, upload code explicitly
+    if train_hparams['machine'] == 'ASU':
+        codefile = [name for name in os.listdir('.') if name.endswith('.py')]
+        assert len(codefile)==1, 'There must be only one `.py` file in the current directory!'
+        logger.experiment.set_code(filename=codefile[0])
 
     # refresh GPU memory
     refresh_cuda_memory()
@@ -706,11 +712,11 @@ model_hparams = {
 
 train_hparams = {
     # log
+    'machine': 'ASU', # key!
     'note': '3y-TSFM-txt-fr-norm',
     'row_log_interval': 1,
     'save_top_k': 1,
     'val_check_interval': 0.2,
-    'machine': 'ASU',
 
     # data size
     'overfit_batches': 0.0,
