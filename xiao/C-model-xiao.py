@@ -190,13 +190,17 @@ def train_one(Model, window_i, model_hparams, train_hparams):
     model = Model(model_hparams)
 
     # get model type
-    train_hparams['task_type'] = model.task_type
-    train_hparams['feature_type'] = model.feature_type
-    train_hparams['model_type'] = model.model_type
-    train_hparams['attn_type'] = model.attn_type
-
+    model_hparams['model_type'] = model.model_type
+    model_hparams['target_type'] = model.target_type
+    model_hparams['feature_type'] = model.feature_type
+    model_hparams['normalize_target'] = model.normalize_target
+    model_hparams['attn_type'] = model.attn_type
+    if hasattr(model, 'emb_share'):
+        model_hparams['emb_share'] = model.emb_share
+        
     # checkpoint
-    ckpt_prefix = f"{train_hparams['model_type']}_{model_hparams['window']}_"
+    ckpt_prefix = f"{train_hparams['note']}_{model_hparams['window']}_"
+    
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
         verbose=True,
         mode='min',
@@ -225,6 +229,7 @@ def train_one(Model, window_i, model_hparams, train_hparams):
 
     # trainer
     trainer = pl.Trainer(gpus=-1, 
+                         precision=train_hparams['precision'],
                          checkpoint_callback=checkpoint_callback, 
                          early_stop_callback=early_stop_callback,
                          overfit_batches=train_hparams['overfit_batches'], 
@@ -261,8 +266,9 @@ def train_one(Model, window_i, model_hparams, train_hparams):
     # If run on ASU, upload code explicitly
     if train_hparams['machine'] == 'ASU':
         codefile = [name for name in os.listdir('.') if name.endswith('.py')]
-        assert len(codefile)==1, 'There must be only one `.py` file in the current directory!'
-        logger.experiment.set_code(filename=codefile[0])
+        assert len(codefile)==1, f'There must be only one `.py` file in the current directory! {len(codefile)} files detected: {codefile}'
+        logger.experiment.log_asset(codefile[0])
+        
 
     # refresh GPU memory
     refresh_cuda_memory()
@@ -358,42 +364,41 @@ class CCDataset(Dataset):
         # of type `numpy.float64`
         docid = targets.docid
         
-        sue = targets.sue
-        sest = targets.sest
+        sue = targets.sue_norm
+        sest = targets.sest_norm
         car_0_30 = targets.car_0_30
         car_0_30_norm = targets.car_0_30_norm
-        
-        alpha = targets.alpha
-        volatility = targets.volatility
-        mcap = targets.mcap/1e6
-        bm = targets.bm
-        roa = targets.roa
-        debt_asset = targets.debt_asset
-        numest = targets.numest
-        smedest = targets.smedest
-        sstdest = targets.sstdest
-        car_m1_m1 = targets.car_m1_m1
-        car_m2_m2 = targets.car_m2_m2
-        car_m30_m3 = targets.car_m30_m3
-        volume = targets.volume
         revision = targets.revision
         revision_norm = targets.revision_norm
         inflow = targets.inflow
         inflow_norm = targets.inflow_norm
         
+        alpha = targets.alpha_norm
+        volatility = targets.volatility_norm
+        mcap = targets.mcap_norm
+        bm = targets.bm_norm
+        roa = targets.roa_norm
+        debt_asset = targets.debt_asset_norm
+        numest = targets.numest_norm
+        smedest = targets.smedest_norm
+        sstdest = targets.sstdest_norm
+        car_m1_m1 = targets.car_m1_m1_norm
+        car_m2_m2 = targets.car_m2_m2_norm
+        car_m30_m3 = targets.car_m30_m3_norm
+        volume = targets.volume_norm
+        
         if self.text_in_dataset:
             # inputs: preembeddings
             embeddings = self.preembeddings[transcriptid]
             
-            # by now the returns are np.array
             return car_0_30, car_0_30_norm, inflow, inflow_norm, revision, revision_norm, \
                    transcriptid, embeddings, \
                    [alpha, car_m1_m1, car_m2_m2, car_m30_m3, sest, sue, numest, sstdest, smedest, mcap, roa, bm, debt_asset, volatility, volume]
         else:
             return docid, \
-                   torch.tensor(car_0_30,dtype=torch.float32), \
-                   torch.tensor(car_0_30_norm,dtype=torch.float32), \
-                   torch.tensor([alpha, car_m1_m1, car_m2_m2, car_m30_m3, sest, sue, numest, sstdest, smedest, mcap, roa, bm, debt_asset, volatility, volume], dtype=torch.float32)
+                   car_0_30, \
+                   car_0_30_norm, \
+                   [alpha, car_m1_m1, car_m2_m2, car_m30_m3, sest, sue, numest, sstdest, smedest, mcap, roa, bm, debt_asset, volatility, volume]
 
 
 # %% [markdown]
@@ -534,18 +539,19 @@ class CC(pl.LightningModule):
 # ## model
 
 # %%
-# STL-text-fr-MLP
+# STL-text-fr
 class CCTransformerSTLTxtFr(CC):
     def __init__(self, hparams):
         # `self.hparams` will be created by super().__init__
         super().__init__(hparams)
         
         # specify model type
-        self.task_type = 'single'
-        self.feature_type = 'text + fin-ratio'
+        self.model_type = 'TSFM'
+        self.target_type = 'car'
+        self.feature_type = 'txt'
+        self.normalize_target = True
         self.attn_type = 'dotprod'
-        self.model_type = 'transformer'
-        self.text_in_dataset = True if self.feature_type!='fin-ratio' else False 
+        self.text_in_dataset = True if self.feature_type!='fr' else False 
 
         self.n_covariate = 15
         
@@ -563,29 +569,14 @@ class CCTransformerSTLTxtFr(CC):
         self.encoder_expert = nn.TransformerEncoder(encoder_layers_expert, self.hparams.n_layers_encoder)
         
         # linear layer to produce final result
-        self.linear_car_1 = nn.Linear(self.hparams.d_model, self.hparams.d_model)
-        self.linear_car_2 = nn.Linear(self.hparams.d_model, self.hparams.final_tdim)
-        self.linear_car_3 = nn.Linear(self.hparams.final_tdim+self.n_covariate, self.hparams.final_tdim+self.n_covariate)
-        self.linear_car_4 = nn.Linear(self.hparams.final_tdim+self.n_covariate, self.hparams.final_tdim+self.n_covariate)
-        self.linear_car_5 = nn.Linear(self.hparams.final_tdim+self.n_covariate, 1)
+        self.fc_1 = nn.Linear(self.hparams.final_tdim, self.hparams.final_tdim)
+        self.fc_2 = nn.Linear(self.hparams.final_tdim, 1)
         
         # dropout for final fc layers
-        self.final_dropout_1 = nn.Dropout(self.hparams.dropout)
-        self.final_dropout_2 = nn.Dropout(self.hparams.dropout)
-        self.final_dropout_3 = nn.Dropout(self.hparams.dropout)
+        self.fc_dropout_1 = nn.Dropout(self.hparams.dropout)
         
-        # layer normalization
-        if self.hparams.normalize_layer:
-            self.layer_norm = nn.LayerNorm(self.hparams.final_tdim+self.n_covariate)
-            
-        # batch normalization
-        if self.hparams.normalize_batch:
-            self.batch_norm = nn.BatchNorm1d(self.n_covariate)
-
     # forward
     def forward(self, embeddings, src_key_padding_mask, fin_ratios):
-        
-        bsz, embed_dim = embeddings.size(0), embeddings.size(2)
         
         # if S is longer than max_seq_len, cut
         embeddings = embeddings[:,:self.hparams.max_seq_len,] # (N, S, E)
@@ -603,24 +594,13 @@ class CCTransformerSTLTxtFr(CC):
         x_attn = self.attn_dropout_1(F.softmax(self.attn_layers_car(x_expert), dim=1)) # (N, S, 1)
         x_expert = torch.bmm(x_expert.transpose(-1,-2), x_attn).squeeze(-1) # (N, E)
         
-        # mix with covariate
-        x_expert = self.final_dropout_1(F.relu(self.linear_car_1(x_expert))) # (N, E)
-        x_expert = F.relu(self.linear_car_2(x_expert)) # (N, final_tdim)
+        # Since we use the model as feature extractor, we won't include `fin_ratios`
+        # concate `x_final` with `fin_ratios`
+        # x_final = torch.cat([x_expert, fin_ratios], dim=-1) # (N, E+X) where X is the number of covariate (n_covariate)
         
-        # batch normalization
-        if self.hparams.normalize_batch:
-            fin_ratios = self.batch_norm(fin_ratios)
-        
-        x_final = torch.cat([x_expert, fin_ratios], dim=-1) # (N, X + final_tdim) where X is the number of covariate (n_covariate)
-
-        # layer normalization
-        if self.hparams.normalize_layer:
-            x_final = self.layer_norm(x_final)
-            
         # final FC
-        x_final = self.final_dropout_2(F.relu(self.linear_car_3(x_final))) # (N, X + final_tdim)
-        x_final = self.final_dropout_3(F.relu(self.linear_car_4(x_final))) # (N, X + final_tdim)
-        y_car = self.linear_car_5(x_final) # (N,1)
+        x_final = self.fc_dropout_1(F.relu(self.fc_1(x_expert))) # (N, E+X)
+        y_car = self.fc_2(x_final) # (N, 1)
         
         # final output
         return y_car
@@ -630,9 +610,6 @@ class CCTransformerSTLTxtFr(CC):
         car, car_norm, inflow, inflow_norm, revision, revision_norm, \
         transcriptid, embeddings, mask, \
         fin_ratios = batch
-        
-        # get batch size
-        bsz = fin_ratios.size(0)
         
         # forward
         y_car = self.forward(embeddings, mask, fin_ratios) # (N, 1)
@@ -649,9 +626,6 @@ class CCTransformerSTLTxtFr(CC):
         transcriptid, embeddings, mask, \
         fin_ratios = batch
         
-        # get batch size
-        bsz = fin_ratios.size(0)
-
         # forward
         y_car = self.forward(embeddings, mask, fin_ratios) # (N, 1)
 
@@ -667,9 +641,6 @@ class CCTransformerSTLTxtFr(CC):
         transcriptid, embeddings, mask, \
         fin_ratios = batch
         
-        # get batch size
-        bsz = fin_ratios.size(0)
-
         # forward
         y_car = self.forward(embeddings, mask, fin_ratios) # (N, 1)
 
@@ -692,15 +663,16 @@ model_hparams = {
     'preembedding_type': 'all_sbert_roberta_nlistsb_encoded', # key!
     'targets_name': 'f_sue_keydevid_car_finratio_vol_transcriptid_sim_inflow_revision_text_norm', # key!
     'roll_type': '3y',  # key!
-    'batch_size': 48,
+    
+    # task weight
+    'car_weight': 1, # key!
+    'inflow_weight': 0, # key!
+    
+    'batch_size': 28,
     'val_batch_size': 4,
-    'max_seq_len': 1024, 
-    'learning_rate': 1e-4,
+    'max_seq_len': 768, 
+    'learning_rate':1e-4, 
     'task_weight': 1,
-    'normalize_layer': False, # key!
-    'normalize_batch': True, # key!
-    'normalize_target': True,
-
     'n_layers_encoder': 4,
     'n_head_encoder': 8, 
     'd_model': 1024,
@@ -712,13 +684,14 @@ model_hparams = {
 
 train_hparams = {
     # log
-    'machine': 'ASU', # key!
-    'note': '3y-TSFM-txt-fr-norm',
-    'row_log_interval': 1,
+    'machine': 'yu-workstation',  # key!
+    'note': f"STL-08-(car~txt)-fc=1-BN=no-bsz={model_hparams['batch_size']}", # key!
+    'row_log_interval': 10,
     'save_top_k': 1,
     'val_check_interval': 0.2,
 
     # data size
+    'precision': 32,
     'overfit_batches': 0.0,
     'min_epochs': 3,
     'max_epochs': 20,
