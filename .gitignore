@@ -14,6 +14,7 @@
 // folders
 neat-vision
 /__pycache__
+/earnings-call
 /xiao/data
 /xiao/checkpoint
 /yifan
