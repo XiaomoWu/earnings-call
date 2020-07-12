@@ -569,11 +569,13 @@ class CCTransformerSTLTxtFr(CC):
         self.encoder_expert = nn.TransformerEncoder(encoder_layers_expert, self.hparams.n_layers_encoder)
         
         # linear layer to produce final result
-        self.fc_1 = nn.Linear(self.hparams.final_tdim, self.hparams.final_tdim)
-        self.fc_2 = nn.Linear(self.hparams.final_tdim, 1)
+        self.txt_fc_1 = nn.Linear(self.hparams.d_model, self.hparams.d_model)
+        self.fc_1 = nn.Linear(self.hparams.d_model+self.n_covariate, self.hparams.d_model+self.n_covariate)
+        self.fc_2 = nn.Linear(self.hparams.d_model+self.n_covariate, self.hparams.d_model+self.n_covariate)
+        self.fc_3 = nn.Linear(self.hparams.d_model+self.n_covariate, 1)
         
         # dropout for final fc layers
-        self.fc_dropout_1 = nn.Dropout(self.hparams.dropout)
+        self.txt_dropout_1 = nn.Dropout(self.hparams.dropout)
         
     # forward
     def forward(self, embeddings, src_key_padding_mask, fin_ratios):
@@ -594,13 +596,17 @@ class CCTransformerSTLTxtFr(CC):
         x_attn = self.attn_dropout_1(F.softmax(self.attn_layers_car(x_expert), dim=1)) # (N, S, 1)
         x_expert = torch.bmm(x_expert.transpose(-1,-2), x_attn).squeeze(-1) # (N, E)
         
+        x_expert = self.txt_dropout_1(self.txt_fc_1(x_expert)) 
+        
+        
         # Since we use the model as feature extractor, we won't include `fin_ratios`
         # concate `x_final` with `fin_ratios`
-        # x_final = torch.cat([x_expert, fin_ratios], dim=-1) # (N, E+X) where X is the number of covariate (n_covariate)
+        x_final = torch.cat([x_expert, fin_ratios], dim=-1) # (N, E+X) where X is the number of covariate (n_covariate)
         
         # final FC
-        x_final = self.fc_dropout_1(F.relu(self.fc_1(x_expert))) # (N, E+X)
-        y_car = self.fc_2(x_final) # (N, 1)
+        x_final = F.relu(self.fc_1(x_final)) # (N, E+X)
+        x_final = F.relu(self.fc_2(x_final)) # (N, E+X)
+        y_car = self.fc_3(x_final) # (N, 1)
         
         # final output
         return y_car
@@ -650,7 +656,6 @@ class CCTransformerSTLTxtFr(CC):
         # logging
         return {'test_loss': loss_car}  
 
-
 # %% [markdown]
 # ## run
 
@@ -684,8 +689,8 @@ model_hparams = {
 
 train_hparams = {
     # log
-    'machine': 'yu-workstation',  # key!
-    'note': f"STL-08-(car~txt)-fc=1-BN=no-bsz={model_hparams['batch_size']}", # key!
+    'machine': 'ASU',  # key!
+    'note': f"STL-10,(car~txt+fr),txtfc=1,fc=2,bsz={model_hparams['batch_size']},lr={model_hparams['learning_rate']}", # key!
     'row_log_interval': 10,
     'save_top_k': 1,
     'val_check_interval': 0.2,
@@ -726,5 +731,3 @@ for window_i in range(len(split_df)):
 
     # train one window
     train_one(Model, window_i, model_hparams, train_hparams)
-
-# %%
