@@ -13,6 +13,32 @@
 #     name: python3
 # ---
 
+import pyarrow.feather as feather
+import pyarrow.parquet as pq
+import pyarrow as pa
+
+# %%time
+x = feather.read_feather('data/x.feather')
+
+# %%time
+x = pq.read_table('data/x.parquet')
+x = x.to_pandas()
+
+# Saving
+
+# %%time
+feather.write_feather(x, 'data/x2.feather')
+
+# %%time
+table = pa.Table.from_pandas(x)
+pq.write_table(table, 'data/x2.parquet')
+
+# %%time
+x.to_feather('data/x2.feather')
+
+# %%time
+x.to_parquet('data/x2.parquet')
+
 # # Init
 
 # +
