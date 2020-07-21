@@ -14,6 +14,7 @@
 *.pa
 *.ckpt
 !split_dates.csv
+!bench_fr.feather
 
 // folders
 neat-vision
