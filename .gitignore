@@ -10,6 +10,10 @@
 *.pt
 *.json
 *.mtx
+*.parquet
+*.pa
+*.ckpt
+!split_dates.csv
 
 // folders
 neat-vision
