@@ -568,7 +568,7 @@ class CC(pl.LightningModule):
         # - If you enable `BatchNorm`, then must set `drop_last=True`.
 
         collate_fn = self.collate_fn if self.text_in_dataset else None
-        return DataLoader(self.train_dataset, batch_size=self.hparams.batch_size, shuffle=True, drop_last=False, num_workers=0, pin_memory=True, collate_fn=collate_fn)
+        return DataLoader(self.train_dataset, batch_size=self.hparams.batch_size, shuffle=True, drop_last=False, num_workers=10, pin_memory=True, collate_fn=collate_fn)
     
     def val_dataloader(self):
         # Caution: 
@@ -577,11 +577,11 @@ class CC(pl.LightningModule):
         # - Not to set `val_batch_size` too large (e.g., 16), otherwise you'll lose precious validation data points
         
         collate_fn = self.collate_fn if self.text_in_dataset else None
-        return DataLoader(self.val_dataset, batch_size=self.hparams.val_batch_size, num_workers=0, pin_memory=True, collate_fn=collate_fn, drop_last=False)
+        return DataLoader(self.val_dataset, batch_size=self.hparams.val_batch_size, num_workers=10, pin_memory=True, collate_fn=collate_fn, drop_last=False)
 
     def test_dataloader(self):
         collate_fn = self.collate_fn if self.text_in_dataset else None
-        return DataLoader(self.test_dataset, num_workers=0, pin_memory=True, collate_fn=collate_fn, drop_last=False)
+        return DataLoader(self.test_dataset, num_workers=10, pin_memory=True, collate_fn=collate_fn, drop_last=False)
     
     def collate_fn(self, data):
         '''create mini-batch
@@ -767,7 +767,7 @@ model_hparams = {
     'seed': 42, # key!
     'preembedding_type': 'all_sbert_roberta_nlistsb_encoded', # key!
     'targets_name': 'f_sue_keydevid_car_finratio_vol_transcriptid_sim_inflow_revision_sentiment_text_norm', # key!
-    'roll_type': '6y',  # key!
+    'roll_type': '5y',  # key!
     'gpus': [0,1,2],
     
     # task weight
@@ -775,15 +775,15 @@ model_hparams = {
     'inflow_weight': 0,   # key!
     'revision_weight': 0, # key!
     
-    'batch_size': 20,     # key!
-    'val_batch_size': 20,
-    'max_seq_len': 768, 
-    'learning_rate':3e-4, # key!
+    'batch_size': 48,     # key!
+    'val_batch_size': 48,
+    'max_seq_len': 1024,  # key!
+    'learning_rate':1e-4, # key!
     'task_weight': 1,
     'n_layers_encoder': 4,
     'n_head_encoder': 8, 
     'd_model': 1024,
-    'final_tdim': 8, # key!
+    'final_tdim': 32, # key!
     'dff': 2048,
     'attn_dropout': 0.1,
     'dropout': 0.5,
@@ -792,7 +792,7 @@ model_hparams = {
 train_hparams = {
     # log
     'machine': 'ASU',  # key!
-    'note': f"STL-24,(car~fr+mtxt {model_hparams['roll_type']}),txtfc=1({model_hparams['final_tdim']}),fc=0,txtdropout=no,fc_dropout=no,NormCAR=yes,bsz={model_hparams['batch_size']},seed={model_hparams['seed']},log(mcap)=yes,lr={model_hparams['learning_rate']:.2g}", # key!
+    'note': f"STL-25,(car~fr+mtxt {model_hparams['roll_type']}),txtfc=1({model_hparams['final_tdim']}),fc=0,txtdropout=no,fc_dropout=no,NormCAR=yes,bsz={model_hparams['batch_size']},seed={model_hparams['seed']},log(mcap)=yes,lr={model_hparams['learning_rate']:.2g},maxlen={model_hparams['max_seq_len']}", # key!
     'row_log_interval': 10,
     'save_top_k': 1,
     'val_check_interval': 0.2,
