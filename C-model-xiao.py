@@ -668,7 +668,7 @@ class CCTransformerSTLTxtFr(CC):
         # self.fc_3 = nn.Linear(self.hparams.d_model+self.n_covariate, 1)
         
         # dropout for final fc layers
-        # self.txt_dropout_1 = nn.Dropout()
+        self.txt_dropout_1 = nn.Dropout()
         # self.fc_dropout_1 = nn.Dropout(self.hparams.dropout)
         # self.fc_dropout_2 = nn.Dropout(self.hparams.dropout)
         
@@ -695,8 +695,8 @@ class CCTransformerSTLTxtFr(CC):
         x_expert = torch.bmm(x_expert.transpose(-1,-2), x_attn).squeeze(-1) # (N, E)
         
         # project text embedding to a lower dimension
+        x_expert = self.txt_dropout_1(x_expert)
         x_expert = self.txt_fc_1(x_expert)
-        # x_expert = self.txt_dropout_1(x_expert)
         
         # concate `x_final` with `fin_ratios`
         x_final = torch.cat([x_expert, fin_ratios], dim=-1) # (N, E+X) where X is the number of covariate (n_covariate)
@@ -775,10 +775,10 @@ model_hparams = {
     'inflow_weight': 0,   # key!
     'revision_weight': 0, # key!
     
-    'batch_size': 48,     # key!
-    'val_batch_size': 48,
+    'batch_size': 66,     # key!
+    'val_batch_size': 66,
     'max_seq_len': 1024,  # key!
-    'learning_rate':1e-4, # key!
+    'learning_rate':3e-4, # key!
     'task_weight': 1,
     'n_layers_encoder': 4,
     'n_head_encoder': 8, 
@@ -792,7 +792,7 @@ model_hparams = {
 train_hparams = {
     # log
     'machine': 'ASU',  # key!
-    'note': f"STL-25,(car~fr+mtxt {model_hparams['roll_type']}),txtfc=1({model_hparams['final_tdim']}),fc=0,txtdropout=no,fc_dropout=no,NormCAR=yes,bsz={model_hparams['batch_size']},seed={model_hparams['seed']},log(mcap)=yes,lr={model_hparams['learning_rate']:.2g},maxlen={model_hparams['max_seq_len']}", # key!
+    'note': f"STL-29,(car~fr+mtxt {model_hparams['roll_type']}),txtfc=1({model_hparams['final_tdim']}),fc=0,txtdropout=yes,fc_dropout=no,NormCAR=yes,bsz={model_hparams['batch_size']},seed={model_hparams['seed']},log(mcap)=yes,lr={model_hparams['learning_rate']:.2g},maxlen={model_hparams['max_seq_len']}", # key!
     'row_log_interval': 10,
     'save_top_k': 1,
     'val_check_interval': 0.2,
