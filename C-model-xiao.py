@@ -778,7 +778,7 @@ model_hparams = {
     'batch_size': 66,     # key!
     'val_batch_size': 66,
     'max_seq_len': 1024,  # key!
-    'learning_rate':3e-4, # key!
+    'learning_rate':5e-4, # key!
     'task_weight': 1,
     'n_layers_encoder': 4,
     'n_head_encoder': 8, 
