@@ -663,14 +663,14 @@ class CCTransformerSTLTxtFr(CC):
         
         # linear layer to produce final result
         self.txt_fc_1 = nn.Linear(self.hparams.d_model, self.hparams.final_tdim)
-        self.fc_1 = nn.Linear(self.hparams.final_tdim+self.n_covariate, 1)
-        # self.fc_2 = nn.Linear(self.hparams.final_tdim+self.n_covariate, 1)
-        # self.fc_3 = nn.Linear(self.hparams.d_model+self.n_covariate, 1)
+        self.fc_1 = nn.Linear(self.hparams.final_tdim+self.n_covariate, self.hparams.final_tdim+self.n_covariate)
+        self.fc_2 = nn.Linear(self.hparams.final_tdim+self.n_covariate, self.hparams.final_tdim+self.n_covariate)
+        self.fc_3 = nn.Linear(self.hparams.final_tdim+self.n_covariate, 1)
         
         # dropout for final fc layers
         self.txt_dropout_1 = nn.Dropout()
-        # self.fc_dropout_1 = nn.Dropout(self.hparams.dropout)
-        # self.fc_dropout_2 = nn.Dropout(self.hparams.dropout)
+        self.fc_dropout_1 = nn.Dropout(self.hparams.dropout)
+        self.fc_dropout_2 = nn.Dropout(self.hparams.dropout)
         
         # batch normalizer
         # self.batch_norm = nn.BatchNorm1d(self.n_covariate)
@@ -696,14 +696,16 @@ class CCTransformerSTLTxtFr(CC):
         
         # project text embedding to a lower dimension
         x_expert = self.txt_dropout_1(x_expert)
-        x_expert = self.txt_fc_1(x_expert)
+        # x_expert = self.txt_fc_1(x_expert)
         
         # concate `x_final` with `fin_ratios`
         x_final = torch.cat([x_expert, fin_ratios], dim=-1) # (N, E+X) where X is the number of covariate (n_covariate)
         
         # final FC
         # x_final = self.fc_dropout_1(F.relu(self.fc_1(x_expert))) # (N, E+X)
-        y_car = self.fc_1(x_final) # (N, 1)
+        x_car = self.fc_dropout_1(F.relu(self.fc_1(x_final))) # (N, E+X)
+        x_car = self.fc_dropout_2(F.relu(self.fc_2(x_car)))
+        y_car = self.fc_3(x_car)
         
         # final output
         return y_car
@@ -778,12 +780,12 @@ model_hparams = {
     'batch_size': 66,     # key!
     'val_batch_size': 66,
     'max_seq_len': 1024,  # key!
-    'learning_rate':5e-4, # key!
+    'learning_rate':3e-4, # key!
     'task_weight': 1,
     'n_layers_encoder': 4,
     'n_head_encoder': 8, 
     'd_model': 1024,
-    'final_tdim': 32, # key!
+    'final_tdim': 1024, # key!
     'dff': 2048,
     'attn_dropout': 0.1,
     'dropout': 0.5,
@@ -792,7 +794,7 @@ model_hparams = {
 train_hparams = {
     # log
     'machine': 'ASU',  # key!
-    'note': f"STL-29,(car~fr+mtxt {model_hparams['roll_type']}),txtfc=1({model_hparams['final_tdim']}),fc=0,txtdropout=yes,fc_dropout=no,NormCAR=yes,bsz={model_hparams['batch_size']},seed={model_hparams['seed']},log(mcap)=yes,lr={model_hparams['learning_rate']:.2g},maxlen={model_hparams['max_seq_len']}", # key!
+    'note': f"STL-33,(car~fr+txt {model_hparams['roll_type']}),txtfc=0(1024),fc=2,txtdropout=yes,fc_dropout=no,StandCAR=yes,StandFr=yes, bsz={model_hparams['batch_size']},seed={model_hparams['seed']},log(mcap)=yes,lr={model_hparams['learning_rate']:.2g},maxlen={model_hparams['max_seq_len']}", # key!
     'row_log_interval': 10,
     'save_top_k': 1,
     'val_check_interval': 0.2,
