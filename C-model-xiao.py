@@ -662,15 +662,15 @@ class CCTransformerSTLTxtFr(CC):
         self.encoder_expert = nn.TransformerEncoder(encoder_layers_expert, self.hparams.n_layers_encoder)
         
         # linear layer to produce final result
-        self.txt_fc_1 = nn.Linear(self.hparams.d_model, self.hparams.final_tdim)
+        # self.txt_fc_1 = nn.Linear(self.hparams.d_model, self.hparams.final_tdim)
         self.fc_1 = nn.Linear(self.hparams.final_tdim+self.n_covariate, self.hparams.final_tdim+self.n_covariate)
         self.fc_2 = nn.Linear(self.hparams.final_tdim+self.n_covariate, self.hparams.final_tdim+self.n_covariate)
         self.fc_3 = nn.Linear(self.hparams.final_tdim+self.n_covariate, 1)
         
         # dropout for final fc layers
         self.txt_dropout_1 = nn.Dropout()
-        self.fc_dropout_1 = nn.Dropout(self.hparams.dropout)
-        self.fc_dropout_2 = nn.Dropout(self.hparams.dropout)
+        # self.fc_dropout_1 = nn.Dropout(self.hparams.dropout)
+        # self.fc_dropout_2 = nn.Dropout(self.hparams.dropout)
         
         # batch normalizer
         # self.batch_norm = nn.BatchNorm1d(self.n_covariate)
@@ -703,8 +703,8 @@ class CCTransformerSTLTxtFr(CC):
         
         # final FC
         # x_final = self.fc_dropout_1(F.relu(self.fc_1(x_expert))) # (N, E+X)
-        x_car = self.fc_dropout_1(F.relu(self.fc_1(x_final))) # (N, E+X)
-        x_car = self.fc_dropout_2(F.relu(self.fc_2(x_car)))
+        x_car = F.relu(self.fc_1(x_final)) # (N, E+X)
+        x_car = F.relu(self.fc_2(x_car))
         y_car = self.fc_3(x_car)
         
         # final output
