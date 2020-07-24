@@ -13,52 +13,6 @@
 #     name: python3
 # ---
 
-# +
-# %%time
-
-comet_api = comet_ml.API()
-exps = comet_api.query('amiao', 'earnings-call', 
-                       comet_ml.api.Parameter('note').startswith('MLP-09'),
-                       # comet_ml.api.Metric('test_rmse')!=None,
-                       archived=False)
-
-if len(exps)!=32:
-    print(f'Experient number != 32! Get {len(exps)} results.')
-
-log_comet = []
-for exp in exps:
-    # get parameter
-    log = {param['name']:param['valueCurrent'] for param in exp.get_parameters_summary()}
-    
-    # get metrics
-    log['test_rmse'] = exp.get_metrics('test_rmse')[0]['metricValue']
-    
-    if len(exp.get_metrics('test_rmse_car'))>0:
-        log['test_rmse_car'] = exp.get_metrics('test_rmse_car')[0]['metricValue']
-           
-    if len(exp.get_metrics('test_rmse_inflow'))>0:
-        log['test_rmse_inflow'] = exp.get_metrics('test_rmse_inflow')[0]['metricValue']
-    
-    if len(exp.get_metrics('test_rmse_inflow'))>0:
-        log['test_rmse_inflow'] = exp.get_metrics('test_rmse_car')[0]['metricValue']
-           
-    # get metadat
-    log = {**log, **exp.get_metadata()}
-    
-    # delete useless params
-    for key in ['checkpoint_path', 'f']:
-        log.pop("key", None)
-    log_comet.append(log)
-    
-log_comet = pd.DataFrame(log_comet)
-
-# append new results to existing comet log
-old_log_comet = feather.read_feather('data/comet_log.feather')
-new_log_comet = pd.concat([old_log_comet, log_comet], ignore_index=True)
-pd.DataFrame.drop_duplicates(new_log_comet, ignore_index=True)
-feather.write_feather(new_log_comet, 'data/comet_log.feather')
-# -
-
 # # Init
 
 # +
@@ -150,6 +104,15 @@ print(f'\nCPU count (physical): {n_cpu}');
 # ## helpers
 
 # +
+# helper: return current time
+class Now:
+    '''return current datetime, but has a more pretty format
+    '''
+    def __init__(self):
+        self.current_datetime = datetime.now()
+    def __repr__(self):
+        return self.current_datetime.strftime('%H:%M:%S')  
+    
 # helper: refresh cuda memory
 def refresh_cuda_memory():
     """
@@ -668,13 +631,16 @@ class CCMLP(CC):
         self.text_in_dataset = True if self.feature_type not in ['fr', 'fr+mtxt'] else False 
         
         # dropout layers
-        # self.dropout_1 = nn.Dropout(self.hparams.dropout)
-        # self.dropout_2 = nn.Dropout(self.hparams.dropout)
+        self.dropout_1 = nn.Dropout(self.hparams.dropout)
+        self.dropout_2 = nn.Dropout(self.hparams.dropout)
+        self.dropout_3 = nn.Dropout(self.hparams.dropout)
         
         # fc layers
         self.fc_1 = nn.Linear(17, 32)
         self.fc_2 = nn.Linear(32, 32)
-        self.fc_3 = nn.Linear(32, 1)
+        self.fc_3 = nn.Linear(32, 32)
+        self.fc_4 = nn.Linear(32, 32)
+        self.fc_5 = nn.Linear(32, 1)
         
     # forward
     def forward(self, fin_ratios, manual_txt):
@@ -682,7 +648,9 @@ class CCMLP(CC):
 
         x_car = F.relu(self.fc_1(x))
         x_car = F.relu(self.fc_2(x_car))
-        y_car = self.fc_3(x_car) # (N, 1)
+        x_car = F.relu(self.fc_3(x_car))
+        x_car = F.relu(self.fc_4(x_car))
+        y_car = self.fc_5(x_car) # (N, 1)
         
         return y_car
     
@@ -741,9 +709,9 @@ model_hparams = {
     'targets_name': 'f_sue_keydevid_car_finratio_vol_transcriptid_sim_inflow_revision_sentiment_text_norm', # key!
     'gpus': [0,1], # key
     'seed': 42,    # key
-    'roll_type': '6y',
-    'batch_size': 256,
-    'val_batch_size':256,
+    'roll_type': '5y',
+    'batch_size': 128,
+    'val_batch_size':128,
     'learning_rate': 5e-4,
     'task_weight': 1,
     'dropout': 0.5,
@@ -753,7 +721,7 @@ model_hparams = {
 train_hparams = {
     # checkpoint & log
     'machine': 'yu-workstation', # key!
-    'note': f"MLP-11,(car~fr+mtxt {model_hparams['roll_type']}),hidden=32,hiddenLayer=2,fc_dropout=no,NormCAR=yes,bsz={model_hparams['batch_size']},seed={model_hparams['seed']},log(mcap)=yes,lr={model_hparams['learning_rate']:.2g}", # key!
+    'note': f"MLP-14,(car~fr+mtxt {model_hparams['roll_type']}),hidden=32,hiddenLayer=4,fc_dropout=no,NormCAR=yes,bsz={model_hparams['batch_size']},seed={model_hparams['seed']},log(mcap)=yes,lr={model_hparams['learning_rate']:.2g}", # key!
     'row_log_interval': 10,
     'save_top_k': 1,
     'val_check_interval': 1.0,
@@ -798,6 +766,3 @@ for window_i in range(len(split_df)):
 
     # train one window
     train_one(Model, window_i, model_hparams, train_hparams)
-# -
-
-
