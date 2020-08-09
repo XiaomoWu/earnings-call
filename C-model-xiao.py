@@ -406,9 +406,7 @@ class CCDataset(Dataset):
         # all of the following targests are
         # of type `numpy.float64`
         docid = targets.docid
-        
-        sue = targets.sue_norm
-        sest = targets.sest_norm
+
         car_0_30 = targets.car_0_30
         car_0_30_norm = targets.car_0_30_norm
         revision = targets.revision
@@ -416,23 +414,41 @@ class CCDataset(Dataset):
         inflow = targets.inflow
         inflow_norm = targets.inflow_norm
         
-        similarity = targets.similarity_bigram_norm
-        sentiment = targets.qa_positive_sent_norm
-        
-        
-        alpha = targets.alpha_norm
-        volatility = targets.volatility_norm
-        mcap = targets.mcap_norm
-        bm = targets.bm_norm
-        roa = targets.roa_norm
-        debt_asset = targets.debt_asset_norm
-        numest = targets.numest_norm
-        smedest = targets.smedest_norm
-        sstdest = targets.sstdest_norm
-        car_m1_m1 = targets.car_m1_m1_norm
-        car_m2_m2 = targets.car_m2_m2_norm
-        car_m30_m3 = targets.car_m30_m3_norm
-        volume = targets.volume_norm
+#         similarity = targets.similarity_bigram_norm
+#         sentiment = targets.qa_positive_sent_norm
+#         sue = targets.sue_norm
+#         sest = targets.sest_norm        
+#         alpha = targets.alpha_norm
+#         volatility = targets.volatility_norm
+#         mcap = targets.mcap_norm
+#         bm = targets.bm_norm
+#         roa = targets.roa_norm
+#         debt_asset = targets.debt_asset_norm
+#         numest = targets.numest_norm
+#         smedest = targets.smedest_norm
+#         sstdest = targets.sstdest_norm
+#         car_m1_m1 = targets.car_m1_m1_norm
+#         car_m2_m2 = targets.car_m2_m2_norm
+#         car_m30_m3 = targets.car_m30_m3_norm
+#         volume = targets.volume_norm
+
+        similarity = targets.similarity_bigram
+        sentiment = targets.qa_positive_sent
+        sue = targets.sue
+        sest = targets.sest        
+        alpha = targets.alpha
+        volatility = targets.volatility
+        mcap = targets.mcap
+        bm = targets.bm
+        roa = targets.roa
+        debt_asset = targets.debt_asset
+        numest = targets.numest
+        smedest = targets.smedest
+        sstdest = targets.sstdest
+        car_m1_m1 = targets.car_m1_m1
+        car_m2_m2 = targets.car_m2_m2
+        car_m30_m3 = targets.car_m30_m3
+        volume = targets.volume
         
         if self.text_in_dataset:
             # inputs: preembeddings
@@ -623,13 +639,12 @@ class CC(pl.LightningModule):
 
 
 # %% [markdown]
-# # STL
+# # MTL
 
 # %% [markdown]
 # ## model
 
 # %%
-# car ~ txt + fr
 class CCTransformerSTLTxtFr(CC):
     def __init__(self, hparams):
         # `self.hparams` will be created by super().__init__
@@ -662,18 +677,19 @@ class CCTransformerSTLTxtFr(CC):
         self.encoder_expert = nn.TransformerEncoder(encoder_layers_expert, self.hparams.n_layers_encoder)
         
         # linear layer to produce final result
-        # self.txt_fc_1 = nn.Linear(self.hparams.d_model, self.hparams.final_tdim)
+        self.txt_fc_1 = nn.Linear(self.hparams.d_model, self.hparams.d_model)
+        self.txt_fc_2 = nn.Linear(self.hparams.d_model, self.hparams.final_tdim)
         self.fc_1 = nn.Linear(self.hparams.final_tdim+self.n_covariate, self.hparams.final_tdim+self.n_covariate)
         self.fc_2 = nn.Linear(self.hparams.final_tdim+self.n_covariate, self.hparams.final_tdim+self.n_covariate)
         self.fc_3 = nn.Linear(self.hparams.final_tdim+self.n_covariate, 1)
         
         # dropout for final fc layers
         self.txt_dropout_1 = nn.Dropout()
-        # self.fc_dropout_1 = nn.Dropout(self.hparams.dropout)
-        # self.fc_dropout_2 = nn.Dropout(self.hparams.dropout)
+        self.fc_dropout_1 = nn.Dropout(self.hparams.dropout)
+        self.fc_dropout_2 = nn.Dropout(self.hparams.dropout)
         
         # batch normalizer
-        # self.batch_norm = nn.BatchNorm1d(self.n_covariate)
+        self.batch_norm = nn.BatchNorm1d(self.n_covariate)
         
     # forward
     def forward(self, embeddings, src_key_padding_mask, fin_ratios):
@@ -695,17 +711,19 @@ class CCTransformerSTLTxtFr(CC):
         x_expert = torch.bmm(x_expert.transpose(-1,-2), x_attn).squeeze(-1) # (N, E)
         
         # project text embedding to a lower dimension
-        x_expert = self.txt_dropout_1(x_expert)
-        # x_expert = self.txt_fc_1(x_expert)
+        x_expert = self.txt_dropout_1(F.relu(self.txt_fc_1(x_expert)))
+        x_expert = self.txt_fc_2(x_expert)
+        
+        # BatchNormFr
+        fin_ratios = self.batch_norm(fin_ratios)
         
         # concate `x_final` with `fin_ratios`
         x_final = torch.cat([x_expert, fin_ratios], dim=-1) # (N, E+X) where X is the number of covariate (n_covariate)
         
         # final FC
-        # x_final = self.fc_dropout_1(F.relu(self.fc_1(x_expert))) # (N, E+X)
-        x_car = F.relu(self.fc_1(x_final)) # (N, E+X)
-        x_car = F.relu(self.fc_2(x_car))
-        y_car = self.fc_3(x_car)
+        x_final = self.fc_dropout_1(F.relu(self.fc_1(x_final))) # (N, E+X)
+        x_final = self.fc_dropout_2(F.relu(self.fc_2(x_final)))
+        y_car = self.fc_3(x_final) # (N, 1)
         
         # final output
         return y_car
@@ -769,7 +787,7 @@ model_hparams = {
     'seed': 42, # key!
     'preembedding_type': 'all_sbert_roberta_nlistsb_encoded', # key!
     'targets_name': 'f_sue_keydevid_car_finratio_vol_transcriptid_sim_inflow_revision_sentiment_text_norm', # key!
-    'roll_type': '5y',  # key!
+    'roll_type': '3y',  # key!
     'gpus': [0,1,2],
     
     # task weight
@@ -777,12 +795,12 @@ model_hparams = {
     'inflow_weight': 0,   # key!
     'revision_weight': 0, # key!
     
-    'batch_size': 66,     # key!
+    'batch_size': 48,     # key!
     'val_batch_size': 66,
     'max_seq_len': 1024,  # key!
     'learning_rate':3e-4, # key!
     'task_weight': 1,
-    'n_layers_encoder': 4,
+    'n_layers_encoder': 6,
     'n_head_encoder': 8, 
     'd_model': 1024,
     'final_tdim': 1024, # key!
@@ -794,7 +812,7 @@ model_hparams = {
 train_hparams = {
     # log
     'machine': 'ASU',  # key!
-    'note': f"STL-33,(car~fr+txt {model_hparams['roll_type']}),txtfc=0(1024),fc=2,txtdropout=yes,fc_dropout=no,StandCAR=yes,StandFr=yes, bsz={model_hparams['batch_size']},seed={model_hparams['seed']},log(mcap)=yes,lr={model_hparams['learning_rate']:.2g},maxlen={model_hparams['max_seq_len']}", # key!
+    'note': f"STL-38,(car~fr+txt {model_hparams['roll_type']} BatchNormFr),txtfc=2(1024),fc=2,txtdropout=yes,fc_dropout=yes,StandCAR=yes,StandFr=no, bsz={model_hparams['batch_size']},seed={model_hparams['seed']},log(mcap)=yes,lr={model_hparams['learning_rate']:.2g},maxlen={model_hparams['max_seq_len']}", # key!
     'row_log_interval': 10,
     'save_top_k': 1,
     'val_check_interval': 0.2,
@@ -838,5 +856,3 @@ for window_i in range(len(split_df)):
 
     # train one window
     train_one(Model, window_i, model_hparams, train_hparams)
-
-# %%
