@@ -1,4 +1,5 @@
 // files
+*.txt
 *.rds
 *.zip
 *.pdf
@@ -14,7 +15,7 @@
 *.pa
 *.ckpt
 !split_dates.csv
-!bench_fr.feather
+
 
 // folders
 neat-vision
@@ -28,11 +29,14 @@ neat-vision
 /writing
 /data/CAR/.ipynb_checkpoints
 /data/factiva-transcripts
-/data/imdb5k
 /data/WRDS-download
+/data/bench_financial_ratio_files
 /data/ciq-transcripts
+/data/imdb5k
 /data/factiva-headlines
 /data/factiva-transcripts
+/data/r2_all_files
 /data/seeking-alpha-cc-example
 /data/WRDS-transcript-demo
-/data/bench_financial_ratio_files
+/lightning_logs
+/MNIST
