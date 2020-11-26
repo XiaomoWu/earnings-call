@@ -14,6 +14,7 @@
 *.parquet
 *.pa
 *.ckpt
+*.sas7bdat
 !split_dates.csv
 
 
@@ -29,6 +30,7 @@ neat-vision
 /writing
 /data/CAR/.ipynb_checkpoints
 /data/factiva-transcripts
+/data/finBERT
 /data/WRDS-download
 /data/bench_financial_ratio_files
 /data/ciq-transcripts
