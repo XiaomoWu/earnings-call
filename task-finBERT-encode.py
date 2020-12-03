@@ -89,9 +89,12 @@ def train(rank, ciq_components_sentencized, world_size, batch_size):
 
     output = {}
     n_batches = len(dataloader)
-    for batch_idx, (sids, texts) in enumerate(tqdm(dataloader)):
+    for batch_idx, (sids, texts) in enumerate(dataloader):
+        if batch_idx%1000==0:
+            print(f'{batch_idx}/{n_batches}')
+
         # tokenize
-        tokens = tokenizer(texts,return_tensors='pt', padding=True, truncation=True, max_length=512)
+        tokens = tokenizer(texts,return_tensors='pt', padding=True, truncation=True, max_length=384)
         tokens = tokens.to(rank)
         
         # get mask
@@ -115,10 +118,13 @@ def train(rank, ciq_components_sentencized, world_size, batch_size):
         del embedding, mask, tokens
 
         for _ in range(len(sids)):
-            output[sids[_]] = embedding_pool[_,...]
+            output[sids[_]] = {'seq_len': valid_seq_len[_].item(), 
+                               'embedding': embedding_pool[_,...]}
+
+
 
         # Save checkpoint
-        if batch_idx>0 and ((batch_idx%(n_batches//500)==0) or (batch_idx>=(n_batches-1))):
+        if batch_idx>0 and ((batch_idx%(n_batches//25)==0) or (batch_idx>=(n_batches-1))):
 
             refresh_cuda_memory()
 
@@ -133,14 +139,14 @@ def train(rank, ciq_components_sentencized, world_size, batch_size):
             torch.save(output, f'./data/Embeddings/{sv_name}')
             output = {}
     
-    # print(f'rank {rank}:\n{output}')
-        
+    # torch.save(output, f'./data/Embeddings/preembeddings_finbert_withoutcls.pt')
+
 def main():
     # Hyper parameters
     batch_size = 16
     world_size = 2
 
-    # load tokens
+    # load sentences
     ciq_components_sentencized = feather.read_feather(f'data/ciq_components_sentencized.feather')
     print(f'N sentences: {len(ciq_components_sentencized)}')
 
