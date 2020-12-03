@@ -52,7 +52,7 @@ def train(rank, ciq_components_sentencized, world_size, batch_size):
     torch.manual_seed(42)
 
     # Initialize process
-    print(f'Initializing rank {rank}...')
+    print(f'Finished initializing rank {rank}')
     dist.init_process_group(                                   
     	backend='gloo',                                         
    		init_method=f'file://{DATA_DIR}/Embeddings/ddp.log',                                   
@@ -98,15 +98,21 @@ def train(rank, ciq_components_sentencized, world_size, batch_size):
         tokens = tokens.to(rank)
         
         # get mask
+        mask = tokens.attention_mask.float() # (B, S)
+        valid_seq_len = torch.sum(mask==1, dim=1) # (B,)
+
+        # Option 1:
         # - the 1st and last token are special token, set to zero
         # - devide mask by (seq_len-2)
-        mask = tokens.attention_mask.float() # (B, S)
-        valid_seq_len = torch.sum(mask==1, dim=1)
-
+        # for i, l in enumerate(valid_seq_len):
+        #     mask[i, [0, l-1]] = 0
+        #     mask[i] /= (l-2)
+            
+        # Option 2:
+        # - all tokens (including [CLS] and [EOS]) are preserved
+        # - devide mask by (seq_len)
         for i, l in enumerate(valid_seq_len):
-            mask[i, [0, l-1]] = 0
-            mask[i] /= (l-2)
-
+            mask[i] /= l
         mask = mask.unsqueeze(-1) # (B, S, 1)
 
         # compute embedding
@@ -134,7 +140,7 @@ def train(rank, ciq_components_sentencized, world_size, batch_size):
             model.to(rank)
             model = DDP(model, device_ids=[rank])
 
-            sv_name = f'preembeddings_finbert_nocls_rank{rank}_{batch_idx}.pt'
+            sv_name = f'preembeddings_finbert_with_special_tokens_rank{rank}_{batch_idx}.pt'
             print(f'Saving to {sv_name}')
             torch.save(output, f'./data/Embeddings/{sv_name}')
             output = {}
