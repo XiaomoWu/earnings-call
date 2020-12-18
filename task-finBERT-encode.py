@@ -1,5 +1,6 @@
 import gc
 import pyarrow.feather as feather
+import time
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
@@ -27,6 +28,12 @@ def refresh_cuda_memory():
 
     # Now empty the cache to flush the allocator
     torch.cuda.empty_cache()
+
+# helper: print elapsed time (given start and end)
+def elapsed_time(start, end):
+    hours, rem = divmod(end-start, 3600)
+    minutes, seconds = divmod(rem, 60)
+    print(f'{int(hours)}h {int(minutes)}min {seconds:.1f}s')
 
 class finBertDataset(Dataset):
     def __init__(self, sentence_id, texts):
@@ -89,9 +96,11 @@ def train(rank, ciq_components_sentencized, world_size, batch_size):
 
     output = {}
     n_batches = len(dataloader)
+    t0 = time.perf_counter()
+
     for batch_idx, (sids, texts) in enumerate(dataloader):
         if batch_idx%1000==0:
-            print(f'{batch_idx}/{n_batches}')
+            print(f'{batch_idx}/{n_batches} {elapsed_time(t0, time.perf_counter())}')
 
         # tokenize
         tokens = tokenizer(texts,return_tensors='pt', padding=True, truncation=True, max_length=384)
@@ -130,22 +139,22 @@ def train(rank, ciq_components_sentencized, world_size, batch_size):
 
 
         # Save checkpoint
-        if batch_idx>0 and ((batch_idx%(n_batches//25)==0) or (batch_idx>=(n_batches-1))):
+        # if batch_idx>0 and ((batch_idx%(n_batches//25)==0) or (batch_idx>=(n_batches-1))):
 
-            refresh_cuda_memory()
+        #     refresh_cuda_memory()
 
-            # Create Model
-            tokenizer = BertTokenizerFast.from_pretrained('bert-base-uncased')
-            model = BertModel.from_pretrained('./data/finBERT', return_dict=True)
-            model.to(rank)
-            model = DDP(model, device_ids=[rank])
+        #     # Create Model
+        #     tokenizer = BertTokenizerFast.from_pretrained('bert-base-uncased')
+        #     model = BertModel.from_pretrained('./data/finBERT', return_dict=True)
+        #     model.to(rank)
+        #     model = DDP(model, device_ids=[rank])
 
-            sv_name = f'preembeddings_finbert_with_special_tokens_rank{rank}_{batch_idx}.pt'
-            print(f'Saving to {sv_name}')
-            torch.save(output, f'./data/Embeddings/{sv_name}')
-            output = {}
+        #     sv_name = f'preembeddings_finbert_with_special_tokens_rank{rank}_{batch_idx}.pt'
+        #     print(f'Saving to {sv_name}')
+        #     torch.save(output, f'./data/Embeddings/{sv_name}')
+        #     output = {}
     
-    # torch.save(output, f'./data/Embeddings/preembeddings_finbert_withoutcls.pt')
+    torch.save(output, f'./data/Embeddings/preembeddings_finbert_with_special_tokens_2nd.pt')
 
 def main():
     # Hyper parameters
