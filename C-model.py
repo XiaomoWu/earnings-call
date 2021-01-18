@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.7.1
+#       jupytext_version: 1.9.1
 #   kernelspec:
 #     display_name: Python 3
 #     language: python
@@ -49,8 +49,8 @@ from torch.utils.data import Dataset, DataLoader
 # working directory
 ROOT_DIR = '.'
 DATA_DIR = f'{ROOT_DIR}/data'
-CHECKPOINT_DIR = 'd:/checkpoints/earnings-call'
-CHECKPOINT_TEMP_DIR = f'{ROOT_DIR}/checkpoint/earnings-call/temp'
+CHECKPOINT_DIR = '/home/yu/Data/CC-checkpoints'
+CHECKPOINT_TEMP_DIR = f'{CHECKPOINT_DIR}/temp'
 
 print(f'ROOT_DIR: {ROOT_DIR}')
 print(f'DATA_DIR: {DATA_DIR}')
@@ -169,7 +169,7 @@ def load_targets(targets_name, force=False):
 def load_preembeddings(preembedding_name):
     if 'preembeddings' not in globals():
         print(f'Loading preembeddings: {preembedding_name}...@{Now()}')
-        globals()['preembeddings'] = torch.load(f"{DATA_DIR}/embeddings/preembeddings_{preembedding_name}.pt")
+        globals()['preembeddings'] = torch.load(f"{DATA_DIR}/Embeddings/preembeddings_{preembedding_name}.pt")
         print(f'Loading preembeddings finished. @{Now()}')
         
 
@@ -396,7 +396,7 @@ class CCDataModule(pl.LightningDataModule):
 
         collate_fn = self.collate_fn if self.text_in_dataset else None
         return DataLoader(self.train_dataset, batch_size=self.batch_size, 
-                          shuffle=True, drop_last=False, num_workers=0, pin_memory=True, collate_fn=collate_fn)
+                          shuffle=True, drop_last=False, num_workers=16, pin_memory=True, collate_fn=collate_fn)
     
     def val_dataloader(self):
         # Caution: 
@@ -405,12 +405,12 @@ class CCDataModule(pl.LightningDataModule):
         # - Not to set `val_batch_size` too large (e.g., 16), otherwise you'll lose precious validation data points
         
         collate_fn = self.collate_fn if self.text_in_dataset else None
-        return DataLoader(self.val_dataset, batch_size=self.val_batch_size, num_workers=0, 
+        return DataLoader(self.val_dataset, batch_size=self.val_batch_size, num_workers=16, 
                           pin_memory=True, collate_fn=collate_fn, drop_last=False)
 
     def test_dataloader(self):
         collate_fn = self.collate_fn if self.text_in_dataset else None
-        return DataLoader(self.test_dataset, batch_size=4, num_workers=0, 
+        return DataLoader(self.test_dataset, batch_size=4, num_workers=16, 
                           pin_memory=True, collate_fn=collate_fn, drop_last=False)
     
     def collate_fn(self, data):
@@ -727,7 +727,7 @@ def train_one(Model, yqtr, data_hparams, model_hparams, trainer_hparams):
         refresh_cuda_memory()
         logger.finalize('finished')
 
-'''
+
 # # MLP
 
 # ## model
@@ -777,7 +777,6 @@ class CCMLP(CC):
         transcriptid, y_car, t_car = self.shared_step(batch)
         return {'transcriptid':transcriptid, 'y_car':y_car, 't_car': t_car}  
 
-
 # ## run
 
 # +
@@ -815,7 +814,7 @@ trainer_hparams = {
     
     # last: MLP-24
     'machine': 'yu-workstation', # key!
-    'note': f"MLP-24,(car~fr+mtxt),hidden=32,hiddenLayer=1,fc_dropout=no,NormCAR=yes,bsz={data_hparams['batch_size']},log(mcap)=yes,lr={model_hparams['learning_rate']:.1e}", # key!
+    'note': f"MLP-25,(car~fr+mtxt),hidden=32,hiddenLayer=1,fc_dropout=no,NormCAR=yes,bsz={data_hparams['batch_size']},log(mcap)=yes,lr={model_hparams['learning_rate']:.1e}", # key!
     'log_every_n_steps': 10,
     'save_top_k': 1,
     'val_check_interval': 1.0,
@@ -861,10 +860,11 @@ for yqtr in split_df.yqtr:
     train_one(Model, yqtr, data_hparams, model_hparams, trainer_hparams)
 
 
-# + [markdown] toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true toc-hr-collapsed=true toc-nb-collapsed=true
-# # RNN
 # -
 
+# # RNN
+
+# +
 # ## Model
 
 # CCGRU
@@ -963,10 +963,10 @@ class CCGRU(CC):
         return {'test_loss': loss_car}  
 
 
-# + [markdown] toc-hr-collapsed=true toc-nb-collapsed=true
+# # + [markdown] toc-hr-collapsed=true toc-nb-collapsed=true
 # ## run
 
-# +
+# # +
 # loop over 24 windows
 load_split_df()
 load_targets()
@@ -1029,7 +1029,8 @@ for window_i in range(len(split_df)):
     # train one window
     trainer_one(CCGRU, window_i, model_hparams, trainer_hparams)
 
-'''
+
+# -
 
 # -
 
@@ -1128,7 +1129,6 @@ class CCTransformerSTLTxt(CC):
 
 # ## `CCTransformerSTLTxtFr`
 
-# + jupyter={"source_hidden": true}
 # car ~ txt + fr
 class CCTransformerSTLTxtFr(CC):
     def __init__(self, d_model, learning_rate, attn_dropout, n_head_encoder, 
@@ -1244,7 +1244,6 @@ class CCTransformerSTLTxtFr(CC):
     def test_step(self, batch, idx):
         transcriptid, y_car, t_car = self.shared_step(batch)
         return {'transcriptid':transcriptid, 'y_car':y_car, 't_car': t_car}  
-# -
 
 # ## run
 
