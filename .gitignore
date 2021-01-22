@@ -15,6 +15,7 @@
 *.pa
 *.ckpt
 *.sas7bdat
+*.spacy
 ddp.log
 !split_dates.csv
 
