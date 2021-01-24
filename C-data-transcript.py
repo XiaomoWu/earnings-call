@@ -1,18 +1,9 @@
 # To add a new cell, type '# %%'
 # To add a new markdown cell, type '# %% [markdown]'
-# %% Change working directory from the workspace root to the ipynb file location. Turn this addition off with the DataScience.changeDirOnImportExport setting
-# ms-toolsai.jupyter added
-import os
-try:
-	os.chdir(os.path.join(os.getcwd(), '../../../../tmp/f694e69e-4651-416f-b4b7-f98b6a7a34a5'))
-	print(os.getcwd())
-except:
-	pass
-# %% [markdown]
-# # Init
 
 # %%
 import datatable as dt
+import os
 import spacy
 
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
@@ -30,115 +21,8 @@ os.chdir(WORK_DIR)
 # initialize data.table
 dt.init_styles()
 
+exec(open('/home/yu/OneDrive/App/Settings/jupyter + R + Python/python_startup.py').read())
 
-# %%
-# Helpers
-import logging
-import pandas as pd
-import pickle
-import pyarrow.feather as feather
-import re
-import time
-
-# creat a logger
-logger = logging.getLogger()
-
-def ld(filename:str, ldname=None, ldtype=None, path='./data', force=False):
-    starttime = time.perf_counter()
-
-    # check if ldtype is valid
-    # possible value: NULL, "rds", "feather"
-    if ldtype!=None and ldtype not in ['pkl', 'feather']:
-        raise Exception('`ldtype` must be one of "pkl", "feather" or "None"')
-
-    # Verify file type: rds or feather
-    # if file doesn't exist, stop;
-    # if both exists, stop and ask for clarification;
-    # if only one exists, assign it to `lddir`
-    hit = [p for p in os.listdir(path) if re.search(f'{filename}\.(rds|feather)', p)]
-    hit_extensions = unique([h.split('.')[-1] for h in hit])
-
-    if len(hit)==0:
-        raise Exception(f'Cannot find {filename} with extension ({hit_extensions})!')
-    elif len(hit)==1:
-        lddir = f'{path}/{hit[0]}'
-        ldtype = hit[0].split('.')[-1]
-        filename_ext = hit[0]
-    elif len(hit)==2 and ldtype!=None:
-        lddir = f'{path}/{filename}/{ldtype}'
-        filename_ext = f'{filename}/{ldtype}'
-    else:
-        raise Exception(f'Multiple extensions of "{filename}" found ({str(hit_extensions)[1:-1]}), please clarify!')
-
-    # get file size before loading
-    file_size = neat_file_size(lddir)
-
-    # If force is False and filename/ldname already exists in globals(), SKIP
-    if force==False and (filename in globals() or ldname in globals()):
-        file_in_env = filename if ldname==None else f'"{filename}" or "{ldname}"'
-
-        print(f'{file_in_env} ({file_size}) already loaded, will NOT load again!')
-    
-    # else, laod the file
-    else:
-        # first, load as val
-        if ldtype=='feather':
-            val = feather.read_feather(lddir)
-        elif ldtype=='pkl':
-            with open(lddir, 'wb') as f:
-                pickle.load(f)
-
-        # get time elapsed
-        elapsed_time = time.perf_counter() - starttime
-
-        # then assign `val` a name
-        # if ldname is None, use filename as ldname
-        if ldname==None:
-            globals()[filename] = val
-            print(f'"{filename_ext}" ({file_size}) loaded ({pretty_time_delta(elapsed_time)})')
-        else:
-            globals()[ldname] = val
-            print(f'"{filename_ext}" ({file_size}) loaded as "{ldname}" ({pretty_time_delta(elapsed_time)})')
-
-def unique(seq: 'tuple or list') -> list:
-    '''remove duplicate while keeping original order
-    '''
-    seen = set()
-    seen_add = seen.add
-    return [x for x in seq if not (x in seen or seen_add(x))]
-
-def pretty_time_delta(seconds):
-    seconds = int(seconds)
-    days, seconds = divmod(seconds, 86400)
-    hours, seconds = divmod(seconds, 3600)
-    minutes, seconds = divmod(seconds, 60)
-    if days > 0:
-        return f'{days}days {hours}h {minutes}m {seconds}s'
-    elif hours > 0:
-        return f'{hours}h {minutes}m {seconds}s'
-    elif minutes > 0:
-        return f'{minutes}m {seconds}s'
-    elif seconds > 0:
-        return f'{seconds}s'
-    else:
-        return f'<1s'
-
-def neat_file_size(file_path):
-    '''Return file size (as string) in human-readable format
-    '''
-    bytes = os.path.getsize(file_path)
-    if bytes >= 1024**3:
-        gbs = bytes/1024 ^ 3
-        return f'{gbs:.1f} GB'
-    elif 1024**2 < bytes & bytes <= 1024**3:
-        mbs = bytes/1024**2
-        return f'{mbs:.1f} MB'
-    elif 1024 < bytes & bytes <= 1024**2:
-        kbs = bytes/1024
-        return f'{kbs:.1f} KB'
-    else:
-        bs = bytes
-        return f'{bs:.1f} B'
 
 # %% [markdown]
 # # Build Doc in spaCy
@@ -148,16 +32,14 @@ def neat_file_size(file_path):
 # %%
 # Use the simpliest pipeline
 # 'tok2vec', 'parser', 'lemmatizer', 'tagger', 'attribute_ruler'
-nlp = spacy.load("en_core_web_lg", disable=['ner'])
+# nlp = spacy.load("en_core_web_sm", disable=['ner', 'parser', 'tok2vec', 'tagger', 'lemmatizer', 'attribute_ruler'])
+nlp = spacy.load("en_core_web_lg")
 
-'''
 # Add a simple sentencizer
-nlp.add_pipe('sentencizer')
+# nlp.add_pipe('sentencizer')
 
-# add [EOC] as special case in tokenization
-special_case = [{ORTH: "[EOC]"}]
-nlp.tokenizer.add_special_case("[EOC]", special_case)
-'''
+# register extension for Doc
+Doc.set_extension('transcriptid', default=None, force=True)
 
 # register extension for Span
 Span.set_extension('transcriptid', default=None, force=True)
@@ -194,6 +76,8 @@ for text, context in text_component:
         text_component_grouped[tid].append((text, context))
     else:
         text_component_grouped[tid] = [(text, context)]
+        
+del text_component
 
 # %% [markdown]
 # ## Build Doc
@@ -202,11 +86,9 @@ for text, context in text_component:
 
 # %%
 # Final output holder
-docs = []
 
 # Iterate through every transcriptid
-for line in tqdm(text_component_grouped.values(), total=len(text_component_grouped)):
-
+def make_one_doc(line):
     # Output holder
     components = []
 
@@ -232,6 +114,9 @@ for line in tqdm(text_component_grouped.values(), total=len(text_component_group
     # join components into one Doc
     doc = Doc.from_docs(components)
 
+    # Add Doc-level attribute: "transcriptid"
+    doc._.transcriptid = context['transcriptid']
+
     # create SpanGroup "components" for doc
     spans_component = []
     for k, v in doc.user_data.items():
@@ -242,9 +127,45 @@ for line in tqdm(text_component_grouped.values(), total=len(text_component_group
     doc.spans['components'] = spans_component 
 
     # return     
-    docs.append(doc)
+    # docs.append(doc)
+    return doc
 
-DocBin(store_user_data=True, docs=docs).to_disk('data/doc_sp500.spacy')
+'''
+# ------------- Without Chunks ----------------
+with ProcessPoolExecutor(16) as executor:
+    docs = list(tqdm(executor.map(make_one_doc, text_component_grouped.values(), chunksize=200), total=len(text_component_grouped)))
+
+# save as DocBin
+# Note: put these lines OUTSIDE of the ProcessPoolExecutor context
+docbin = DocBin(store_user_data=True, docs=docs, attrs=['ORTH', 'POS', 'ENT_IOB', 'ENT_TYPE', 'LEMMA'])
+
+del text_component_grouped, text_component_grouped
+
+docbin.to_disk(f'data/doc_sp500_trf.spacy')
+'''
+
+# ------------- With Chunks -------------------
+# Because of memory limitation, we split the data into chunks and process/store one by one.
+
+n_chunks = 4
+chunk_size = len(text_component_grouped)//n_chunks+1
+
+text_component_grouped_chunked = list(chunks(list(text_component_grouped.values()), chunk_size))
+
+for i in range(n_chunks):
+
+    print(f'Processing chunks: {i+1}/{n_chunks}')
+
+    data = text_component_grouped_chunked[i]
+
+    with ProcessPoolExecutor(32) as executor:
+        docs = list(tqdm(executor.map(make_one_doc, data, chunksize=200), total=len(data)))
+
+    docbin = DocBin(store_user_data=True, docs=docs, attrs=['ORTH', 'LEMMA', 'MORPH', 'POS', 'TAG', 'HEAD', 'DEP', 'ENT_IOB', 'ENT_TYPE'])
+    
+    docbin.to_disk(f'data/doc_sp500_lg_{i}.spacy')
+
+    # del docs, docbin
 
 # %% [markdown]
 # ## Save DocBin
@@ -254,6 +175,6 @@ DocBin(store_user_data=True, docs=docs).to_disk('data/doc_sp500.spacy')
 # > When saving DocBin, you must also save the nlp object for recovery.
 
 # %%
-DocBin(store_user_data=True, docs=docs).to_disk('data/doc_sp500.spacy')
-
+# DocBin(store_user_data=True, docs=docs).to_disk('data/doc_sp500_test.spacy')
+# print('DocBin Saved!')
 

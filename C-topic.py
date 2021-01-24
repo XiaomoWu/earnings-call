@@ -17,9 +17,13 @@ from functools import partial
 from spacy.tokens import Doc, DocBin, Span
 from tqdm.auto import tqdm
 
-os.chdir('/home/yu/OneDrive/CC')
-
 dt.init_styles()
+
+WORK_DIR = '/home/yu/OneDrive/CC'
+DATA_DIR = f'{WORK_DIR}/data'
+os.chdir(WORK_DIR)
+
+exec(open('/home/yu/OneDrive/App/Settings/jupyter + R + Python/python_startup.py').read())
 
 # %% [markdown]
 # # Convert Doc to "text tokens"
@@ -83,7 +87,11 @@ def make_text_tokens(docs, componentids):
     
     return texttoken
 
-# texttoken_md = make_text_tokens(docs[:100], componentids_md)
+# start = time.perf_counter()
+# texttoken_md = make_text_tokens(docs[:1000], componentids_md)
+# gap = time.perf_counter() - start
+# print(f'{gap} secs')
+
 # texttoken_qa = make_text_tokens(docs, componentids_qa)
 
 
@@ -116,11 +124,11 @@ def make_text_tokens(doc):
     # return 
     return {doc._.transcriptid: txttok}
 
-from multiprocessing import get_context
-
 start = time.perf_counter()
-with mp.Pool(10) as pool:
-    results = pool.map(make_text_tokens, docs[:1000], chunksize=100)
+
+with mp.Pool(5) as pool:
+    results = pool.imap_unordered(make_text_tokens, docs[:100], chunksize=10)
+
 gap = time.perf_counter() - start
 print(f'{gap} secs')
 
@@ -129,10 +137,6 @@ print(f'{gap} secs')
 
 # texttoken_md = make_text_tokens(docs, componentids_md)
 # texttoken_qa = make_text_tokens(docs, componentids_qa)
-
-
-# %%
-# list(results)[0]
 
 # %% [markdown]
 # # Convert to DTM
