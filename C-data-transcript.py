@@ -147,10 +147,12 @@ docbin.to_disk(f'data/doc_sp500_trf.spacy')
 # ------------- With Chunks -------------------
 # Because of memory limitation, we split the data into chunks and process/store one by one.
 
-n_chunks = 4
+n_chunks = 10
 chunk_size = len(text_component_grouped)//n_chunks+1
 
 text_component_grouped_chunked = list(chunks(list(text_component_grouped.values()), chunk_size))
+
+del text_component_grouped
 
 for i in range(n_chunks):
 
@@ -158,14 +160,15 @@ for i in range(n_chunks):
 
     data = text_component_grouped_chunked[i]
 
-    with ProcessPoolExecutor(32) as executor:
+    # process using pools
+    with ProcessPoolExecutor(16) as executor:
         docs = list(tqdm(executor.map(make_one_doc, data, chunksize=200), total=len(data)))
 
     docbin = DocBin(store_user_data=True, docs=docs, attrs=['ORTH', 'LEMMA', 'MORPH', 'POS', 'TAG', 'HEAD', 'DEP', 'ENT_IOB', 'ENT_TYPE'])
     
     docbin.to_disk(f'data/doc_sp500_lg_{i}.spacy')
 
-    # del docs, docbin
+    del docs, docbin, data
 
 # %% [markdown]
 # ## Save DocBin
