@@ -9,6 +9,7 @@
 *.feather
 *.pkl
 *.pt
+*.tgz
 *.json
 *.mtx
 *.parquet
@@ -39,6 +40,8 @@ neat-vision
 /data/imdb5k
 /data/factiva-headlines
 /data/factiva-transcripts
+/data/ldamodel
+/data/nlp_*
 /data/r2_all_files
 /data/seeking-alpha-cc-example
 /data/WRDS-transcript-demo

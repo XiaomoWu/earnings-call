@@ -8,7 +8,7 @@
 #       format_version: '1.5'
 #       jupytext_version: 1.9.1
 #   kernelspec:
-#     display_name: Python 3
+#     display_name: Python 3.8
 #     language: python
 #     name: python3
 # ---
@@ -32,22 +32,31 @@ import shutil
 import pandas as pd
 import pyarrow.feather as feather
 
+from argparse import Namespace
 from collections import OrderedDict, defaultdict
 from datatable import f, update
+from datetime import datetime
+from itertools import chain
+from operator import itemgetter
 from spacy.lang.en import English
-from argparse import Namespace
 from scipy.sparse import coo_matrix
 from tqdm.auto import tqdm
-from datetime import datetime
-from operator import itemgetter
 from torch import nn
 from torch.nn import TransformerEncoder, TransformerEncoderLayer
 from torch.utils.data.dataset import random_split
 from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence, pad_packed_sequence
 from torch.utils.data import Dataset, DataLoader
 
+# Init for script use
+with open("/home/yu/OneDrive/App/Settings/jupyter + R + Python/python_startup.py", 'r') as _:
+    exec(_.read())
+
+
+import os
+os.chdir('/home/yu/OneDrive/CC')
+
 # working directory
-ROOT_DIR = '.'
+ROOT_DIR = '/home/yu/OneDrive/CC'
 DATA_DIR = f'{ROOT_DIR}/data'
 CHECKPOINT_DIR = '/home/yu/Data/CC-checkpoints'
 CHECKPOINT_TEMP_DIR = f'{CHECKPOINT_DIR}/temp'
@@ -110,19 +119,6 @@ def tensor_to_str(tensor, tailing='\n'):
     tensor = [f'{str(x)}{tailing}' for x in tensor]
     return tensor
 
-# helper: str_to_int
-def str_to_int(string):
-    '''Given a string, convert it into int
-    '''
-    str_as_bytes = string.encode('utf-8')
-    return int.from_bytes(str_as_bytes, 'little')
-
-# helper: int_to_str
-def int_to_str(integer):
-    '''Given a int, convert it into str
-    '''
-    int_as_bytes = integer.to_bytes((integer.bit_length() + 7) // 8, 'little')
-    return int_as_bytes.decode('utf-8')
 
 # helper: refresh cuda memory
 def refresh_cuda_memory():
@@ -168,15 +164,65 @@ def load_targets(targets_name, force=False):
 # helpers: load preembeddings
 def load_preembeddings(preembedding_name):
     if 'preembeddings' not in globals():
-        print(f'Loading preembeddings: {preembedding_name}...@{Now()}')
-        globals()['preembeddings'] = torch.load(f"{DATA_DIR}/Embeddings/preembeddings_{preembedding_name}.pt")
-        print(f'Loading preembeddings finished. @{Now()}')
         
+        # find the embedding files
+        emb_paths = [path for path in os.listdir('data/Embeddings')
+                     if re.search(f'{preembedding_name}_rank', path)]
+        emb_paths.sort()
+        assert len(emb_paths)==2, "Expect two files: rank0 and rank1"
+
+        # load the embedding files
+        print(f'{datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")}, Loading "{emb_paths[0]}"...')
+        emb0 = torch.load(f"{DATA_DIR}/Embeddings/{emb_paths[0]}")
+        print(f'{datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")}, Loading "{emb_paths[1]}"...')
+        emb1 = torch.load(f"{DATA_DIR}/Embeddings/{emb_paths[1]}")
+
+        # merge two ranks into one (update emb0 with emb1)
+        for tid, cid_emb in emb1.items():
+            for cid, emb in cid_emb.items():
+                emb0[tid].update({cid:emb})
+        print('Merging completes!')
+
+        # write embedding to globals()
+        globals()['preembeddings'] = emb0
+    
+    else:
+        print(f'Pre-embedding "{preembedding_name}" already loaded, will not load again!')
 
 # helpers: load split_df
-def load_split_df(roll_type):
+def load_split_df(window_size):
     split_df = pd.read_csv(f'{DATA_DIR}/split_dates.csv')
-    return split_df.loc[split_df.roll_type==roll_type]
+    return split_df.loc[split_df.window_size==window_size]
+
+# helpers: load tid_cid_pair
+def load_tid_cid_pair(tid_cid_pair_name):
+    '''load DataFrame tid_cid_pair, convert it into a Dict
+    
+    output: {tid:[cid1, cid2, ...]}
+    
+    tid_cid_pair_name: str. e.g., "md", "qa", "all"
+    '''
+    pair = feather.read_feather(f'data/tid_cid_pair_{tid_cid_pair_name}.feather')
+    output = {}
+    for tid, group in pair.groupby(['transcriptid']):
+        cids = group.componentid.to_list()
+        output[tid] = cids
+    return output
+    
+# helpers: load tid_cid_pair
+def load_tid_from_to_pair(tid_from_to_pair_name):
+    '''load DataFrame tid_from_to_pair, convert it into a Dict
+    
+    output: {tid_from:[tid_to1, tid_to2, ...]}
+    
+    tid_cid_pair_name: str. e.g., "3qtr"
+    '''
+    pair = feather.read_feather(f'data/tid_from_to_pair_{tid_from_to_pair_name}.feather')
+    
+    output = {}
+    for _, (_, tid_from, tid_to) in pair.iterrows():
+        output[tid_from] = tid_to.tolist()
+    return output
     
 # helper: log_ols_rmse
 def log_ols_rmse(logger, yqtr):
@@ -187,17 +233,18 @@ def log_ols_rmse(logger, yqtr):
     '''
     performance = dt.Frame(pd.read_feather('data/performance_by_yqtr.feather'))
 
-    ols_rmse_norm = performance[(f.model_name=='ols: car_norm ~ fr') & (f.roll_type=='3y') & (f.yqtr==yqtr), f.rmse][0,0]
+
+    ols_rmse_norm = performance[(f.model_name=='ols: car_norm ~ fr') & (f.window_size=='3y') & (f.yqtr==yqtr), f.rmse][0,0]
     logger.experiment.log_parameter('ols_rmse_norm', ols_rmse_norm)
     
-def log_test_start(logger, roll_type, yqtr):
+def log_test_start(logger, window_size, yqtr):
     '''
     Given window, find the corresponding star/end date of the training/test periods, 
     then log to Comet
     '''
     split_df = pd.read_csv(f'data/split_dates.csv')
 
-    _, train_start, train_end, test_start, test_end, _, _, _ = tuple(split_df.loc[(split_df.yqtr==yqtr) & (split_df.roll_type==roll_type)].iloc[0])
+    _, train_start, train_end, test_start, test_end, *_ = tuple(split_df.loc[(split_df.yqtr==yqtr) & (split_df.window_size==window_size)].iloc[0])
     
     logger.experiment.log_parameter('train_start', train_start)
     logger.experiment.log_parameter('train_end', train_end)
@@ -209,56 +256,62 @@ def log_test_start(logger, roll_type, yqtr):
 
 # ## def Data
 
+# +
 # Define Dataset
 class CCDataset(Dataset):
     
-    def __init__(self, yqtr, split_type, text_in_dataset, roll_type, preembeddings, targets_df, split_df, valid_transcriptids=None):
+    def __init__(self, yqtr, split_type, text_in_dataset, window_size, preembeddings, targets_df, split_df, tid_cid_pair, tid_from_to_pair):
         '''
         Args:
-            preembeddings (from globals): list of embeddings. Each element is a tensor (S, E) where S is number of sentences in a call
-            targets_df (from globals): DataFrame of targets variables.
-            split_df (from globals):
+            preembeddings: dict of pre-embeddings. In the form
+              `{tid:{cid:{'embedding':Tensor, other-key-value-pair}}}` 
+              for component level and 
+              `{tid:{sid:{'embedding':Tensor, other-key-value-pair}}}` 
+              for sentence level.
+              
+            targets_df: DataFrame of targets variables.
+            split_df: DataFrame that keeps the split of windows
             ytqr: str. e.g., "2008-q3"
             split_type: str. 'train', 'val', or 'test'
-            text_only: only output CAR and transcripts if true, otherwise also output financial ratios
-            transcriptids: list. If provided, only the given transcripts will be used in generating the Dataset. `transcriptids` is applied **on top of** `yqtr` and `split_type`
+            text_in_dataset: also output text embedding if true.
+            
+            tid_cid_pair: Dict of transcriptid and componentid/sentenceid for
+              text that will be used. In the form 
+              `{tid:[cid1, cid2, ...]}` or `{tid:[sid1, sid2, ...]}`
+              Note! [cid1, cid2, ...] must be in the same order as in original 
+              transcript!
         '''
-
-        # ----------------------------------------------------------------------------------
-        # Given the stage (train/val/test), find the valid `transcriptids` from `targets_df`
-        # ----------------------------------------------------------------------------------
-        
+            
         # get split dates from `split_df`
-        _, train_start, train_end, test_start, test_end, _, yqtr, is_test = tuple(split_df.loc[(split_df.yqtr==yqtr) & (split_df.roll_type==roll_type)].iloc[0])
+        _, train_start, train_end, test_start, test_end, _, yqtr = tuple(split_df.loc[(split_df.yqtr==yqtr) & (split_df.window_size==window_size)].iloc[0])
         
         train_start = datetime.strptime(train_start, '%Y-%m-%d').date()
         train_end = datetime.strptime(train_end, '%Y-%m-%d').date()
         test_start = datetime.strptime(test_start, '%Y-%m-%d').date()
         test_end = datetime.strptime(test_end, '%Y-%m-%d').date()
         
-        # select valid transcriptids (preemb_keys) according to split dates 
+        # generate targets_df for train, val, test 
         if split_type=='train':
             # print current window
-            print(f'Current window: {yqtr} ({roll_type}) \n(train: {train_start} to {train_end}) (test: {test_start} to {test_end})')
-            transcriptids = targets_df[targets_df.ciq_call_date.between(train_start, train_end)].transcriptid.sample(frac=1, random_state=42).tolist()
-            transcriptids = transcriptids[:int(len(transcriptids)*0.9)]
-            # print(f'Dateset -> N train: {len(transcriptids)}')
+            print(f'Current window: {yqtr} ({window_size}) \n(train: {train_start} to {train_end}) (test: {test_start} to {test_end})')
             
-        if split_type=='val':
-            transcriptids = targets_df[targets_df.ciq_call_date.between(train_start, train_end)].transcriptid.sample(frac=1, random_state=42).tolist()
-            transcriptids = transcriptids[int(len(transcriptids)*0.9):]
-            # print(f'Dataset -> N val: {len(transcriptids)}')
+            targets_df = targets_df[targets_df.ciq_call_date.between(train_start, train_end)].sample(frac=1, random_state=42)
+            targets_df = targets_df.iloc[:int(len(targets_df)*0.9)]
+            
+        elif split_type=='val':
+            targets_df = targets_df[targets_df.ciq_call_date.between(train_start, train_end)].sample(frac=1, random_state=42)
+            targets_df = targets_df.iloc[int(len(targets_df)*0.9):]
 
         elif split_type=='test':
-            transcriptids = targets_df[targets_df.ciq_call_date.between(test_start, test_end)].transcriptid.tolist()
-            # print(f'Dataset -> N test: {len(transcriptids)}')
+            targets_df = targets_df[targets_df.ciq_call_date.between(test_start, test_end)]
 
-        self.valid_preemb_keys = list(set(transcriptids).intersection(set(preembeddings.keys())))
         
-        if valid_transcriptids is not None:
-            self.valid_preemb_keys = list(self.valid_preemb_keys.intersection(set(valid_transcriptids)))
+        # make sure targets_df only contains transcriptid that're also 
+        # in preembeddings
+        targets_df = targets_df.loc[targets_df.transcriptid.isin(set(preembeddings.keys()))]
         
-        # self attributes
+        # Assign states
+        self.targets_df = targets_df
         self.text_in_dataset = text_in_dataset
         if text_in_dataset:
             self.preembeddings = preembeddings
@@ -268,16 +321,17 @@ class CCDataset(Dataset):
         self.test_start = test_start
         self.test_end = test_end
         self.split_type = split_type
+        self.tid_cid_pair = tid_cid_pair
+        self.tid_from_to_pair = tid_from_to_pair
         
     def __len__(self):
-        return (len(self.valid_preemb_keys))
+        return len(self.targets_df)
     
     def __getitem__(self, idx):
         if torch.is_tensor(idx):
             idx = idx.tolist()
             
-        transcriptid = self.valid_preemb_keys[idx]
-        targets = self.targets_df[self.targets_df.transcriptid==transcriptid].iloc[0]
+        targets = self.targets_df.iloc[idx]
         
         # all of the following targests are
         # of type `numpy.float64`
@@ -308,44 +362,61 @@ class CCDataset(Dataset):
         car_m30_m3 = targets.car_m30_m3_norm
         volume = targets.volume_norm
 
-        # using the unnormalized features
-#         similarity = targets.similarity_bigram
-#         sentiment = targets.qa_positive_sent
-#         sue = targets.sue
-#         sest = targets.sest        
-#         alpha = targets.alpha
-#         volatility = targets.volatility
-#         mcap = targets.mcap
-#         bm = targets.bm
-#         roa = targets.roa
-#         debt_asset = targets.debt_asset
-#         numest = targets.numest
-#         smedest = targets.smedest
-#         sstdest = targets.sstdest
-#         car_m1_m1 = targets.car_m1_m1
-#         car_m2_m2 = targets.car_m2_m2
-#         car_m30_m3 = targets.car_m30_m3
-#         volume = targets.volume
-        
         if self.text_in_dataset:
             # inputs: preembeddings
-            embeddings = self.preembeddings[transcriptid]
+            embeddings = assemble_embedding(transcriptid, 
+                                            self.preembeddings,
+                                            self.tid_cid_pair,
+                                            self.tid_from_to_pair)
 
-            return car_0_30, car_0_30_norm, inflow, inflow_norm, revision, revision_norm, \
-                   transcriptid, embeddings, \
+            return car_0_30, car_0_30_norm, inflow, inflow_norm, revision,\
+                   revision_norm,  transcriptid, embeddings, \
                    [alpha, car_m1_m1, car_m2_m2, car_m30_m3, sest, sue, numest, sstdest, smedest, mcap, roa, bm, debt_asset, volatility, volume]
         else:
             return torch.tensor(transcriptid,dtype=torch.int64), \
                    torch.tensor(car_0_30,dtype=torch.float32), \
                    torch.tensor(car_0_30_norm,dtype=torch.float32), \
-                   torch.tensor([similarity, sentiment],dtype=torch.float32),\
-                   torch.tensor([alpha, car_m1_m1, car_m2_m2, car_m30_m3, sest, sue, numest, sstdest, smedest, mcap, roa, bm, debt_asset, volatility, volume], dtype=torch.float32)
+                   torch.tensor([similarity, sentiment],
+                                dtype=torch.float32),\
+                   torch.tensor([alpha, car_m1_m1, car_m2_m2, car_m30_m3,\
+                                 sest, sue, numest, sstdest, smedest, mcap,\
+                                 roa, bm, debt_asset, volatility, volume],
+                                dtype=torch.float32)
+      
+    
+def assemble_embedding(transcriptid, preembeddings, 
+                       tid_cid_pair, tid_from_to_pair):
+    '''Assemble embeddings belonging to the same tid into one Tensor
+    
+    Method:
+        1) Given transcriptid, use it as "transcriptid_from" to retrieve all the 
+           corresponding "transcriptid_to" from table "tid_from_to_pair"
+        2) For every transcript_to, retrieve all the corresponding cids from table
+           "tid_cid_pair"
+    '''
+    # find tids that we'll consider
+    tids_to = tid_from_to_pair[transcriptid]
+    
+    # for every tid, merge its components
+    output = []
+    
+    for tid_to in tids_to:
+        comps = preembeddings[tid_to]
+        emb = [comps[cid]['embedding'] 
+               for cid in tid_cid_pair.get(tid_to, [])]
+        output.extend(emb)
+        
+    return torch.stack(output)
 
+
+# -
 
 # then define DataModule
 class CCDataModule(pl.LightningDataModule):
     def __init__(self, yqtr, preembedding_name, targets_name,
-                 batch_size, val_batch_size, test_batch_size, text_in_dataset, roll_type):
+                 batch_size, val_batch_size, test_batch_size,
+                 text_in_dataset, window_size, tid_cid_pair_name,
+                 tid_from_to_pair_name):
         super().__init__()
         
         self.yqtr = yqtr
@@ -355,7 +426,9 @@ class CCDataModule(pl.LightningDataModule):
         self.val_batch_size = val_batch_size
         self.test_batch_size = test_batch_size
         self.text_in_dataset = text_in_dataset
-        self.roll_type = roll_type
+        self.window_size = window_size
+        self.tid_cid_pair_name = tid_cid_pair_name
+        self.tid_from_to_pair_name = tid_from_to_pair_name
         
     # Dataset
     def setup(self):
@@ -364,29 +437,40 @@ class CCDataModule(pl.LightningDataModule):
         
         load_preembeddings(self.preembedding_name)
         targets_df = load_targets(self.targets_name)
-        split_df = load_split_df(self.roll_type)
+        split_df = load_split_df(self.window_size)
+        tid_cid_pair = load_tid_cid_pair(self.tid_cid_pair_name)
+        tid_from_to_pair = load_tid_from_to_pair(self.tid_from_to_pair_name)
         
-        self.preembeddings = preembeddings
-        self.targets_df = targets_df
-        self.split_df = split_df
-        
-        self.train_dataset = CCDataset(self.yqtr, split_type='train', text_in_dataset=self.text_in_dataset,
-                                       roll_type=self.roll_type,
-                                       preembeddings=self.preembeddings,
-                                       targets_df=self.targets_df, split_df=self.split_df)
+        self.train_dataset = CCDataset(self.yqtr, 
+                                       split_type='train',
+                                       text_in_dataset=self.text_in_dataset,
+                                       window_size=self.window_size,
+                                       preembeddings=preembeddings,
+                                       targets_df=targets_df, 
+                                       split_df=split_df,
+                                       tid_cid_pair=tid_cid_pair,
+                                       tid_from_to_pair=tid_from_to_pair)
         print(f'N train = {len(self.train_dataset)}')
         
-        self.val_dataset = CCDataset(self.yqtr, split_type='val', text_in_dataset=self.text_in_dataset,
-                                     roll_type=self.roll_type,
-                                     preembeddings=self.preembeddings,
-                                     targets_df=self.targets_df, split_df=self.split_df)
+        self.val_dataset = CCDataset(self.yqtr, split_type='val',
+                                     text_in_dataset=self.text_in_dataset,
+                                     window_size=self.window_size,
+                                     preembeddings=preembeddings,
+                                     targets_df=targets_df,
+                                     split_df=split_df,
+                                     tid_cid_pair=tid_cid_pair,
+                                     tid_from_to_pair=tid_from_to_pair)
         print(f'N val = {len(self.val_dataset)}')
         print(f'N train+val = {len(self.train_dataset)+len(self.val_dataset)}')
 
-        self.test_dataset = CCDataset(self.yqtr, split_type='test', text_in_dataset=self.text_in_dataset, 
-                                      roll_type=self.roll_type,
-                                      preembeddings=self.preembeddings,
-                                      targets_df=self.targets_df, split_df=self.split_df)
+        self.test_dataset = CCDataset(self.yqtr, split_type='test',
+                                      text_in_dataset=self.text_in_dataset, 
+                                      window_size=self.window_size,
+                                      preembeddings=preembeddings,
+                                      targets_df=targets_df,
+                                      split_df=split_df,
+                                      tid_cid_pair=tid_cid_pair,
+                                      tid_from_to_pair=tid_from_to_pair)
         print(f'N test = {len(self.test_dataset)}')
 
     # DataLoader
@@ -396,7 +480,8 @@ class CCDataModule(pl.LightningDataModule):
 
         collate_fn = self.collate_fn if self.text_in_dataset else None
         return DataLoader(self.train_dataset, batch_size=self.batch_size, 
-                          shuffle=True, drop_last=False, num_workers=16, pin_memory=True, collate_fn=collate_fn)
+                          shuffle=True, drop_last=False, num_workers=2,
+                          pin_memory=True, collate_fn=collate_fn)
     
     def val_dataloader(self):
         # Caution: 
@@ -405,12 +490,13 @@ class CCDataModule(pl.LightningDataModule):
         # - Not to set `val_batch_size` too large (e.g., 16), otherwise you'll lose precious validation data points
         
         collate_fn = self.collate_fn if self.text_in_dataset else None
-        return DataLoader(self.val_dataset, batch_size=self.val_batch_size, num_workers=16, 
-                          pin_memory=True, collate_fn=collate_fn, drop_last=False)
+        return DataLoader(self.val_dataset, batch_size=self.val_batch_size,
+                          num_workers=2, pin_memory=True, collate_fn=collate_fn,
+                          drop_last=False)
 
     def test_dataloader(self):
         collate_fn = self.collate_fn if self.text_in_dataset else None
-        return DataLoader(self.test_dataset, batch_size=4, num_workers=16, 
+        return DataLoader(self.test_dataset, batch_size=4, num_workers=2, 
                           pin_memory=True, collate_fn=collate_fn, drop_last=False)
     
     def collate_fn(self, data):
@@ -440,10 +526,14 @@ class CCDataModule(pl.LightningDataModule):
             mask[i, :length] = 0
         mask = mask == 1
         
-        return torch.tensor(car_0_30, dtype=torch.float32), torch.tensor(car_0_30_norm, dtype=torch.float32), \
-               torch.tensor(inflow, dtype=torch.float32), torch.tensor(inflow_norm, dtype=torch.float32), \
-               torch.tensor(revision, dtype=torch.float32), torch.tensor(revision_norm, dtype=torch.float32), \
-               torch.tensor(transcriptid, dtype=torch.float32), embeddings.float(), mask, \
+        return torch.tensor(car_0_30, dtype=torch.float32), \
+               torch.tensor(car_0_30_norm, dtype=torch.float32), \
+               torch.tensor(inflow, dtype=torch.float32), \
+               torch.tensor(inflow_norm, dtype=torch.float32), \
+               torch.tensor(revision, dtype=torch.float32), \
+               torch.tensor(revision_norm, dtype=torch.float32), \
+               torch.tensor(transcriptid, dtype=torch.float32), \
+               embeddings.float(), mask, \
                torch.tensor(fin_ratios, dtype=torch.float32)
 
 
@@ -471,60 +561,6 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
     
     
-# Model: FeatureMixer
-class FeatureMixerLayer(nn.Module):
-    def __init__(self, d_model):
-        '''
-        d_model: the dimension in the FC layers. For text, usually be 1024; for fin-ratios, should be 15
-        '''
-        super().__init__()
-        self.batch_norm = nn.BatchNorm1d(d_model)
-        self.dropout = nn.Dropout()
-        self.fc = nn.Linear(d_model, d_model)
-    
-    def forward(self, x):
-        '''
-        x.size = [bsz, d_model]
-        '''
-        x = self.dropout(self.batch_norm(x))
-        y = F.relu(self.fc(x))
-        
-        return y
-    
-class FrMixerLayer(nn.Module):
-    def __init__(self, d_model):
-        '''
-        d_model: the dimension in the FC layers. For text, usually be 1024; for fin-ratios, should be 15
-        '''
-        super().__init__()
-        self.batch_norm = nn.BatchNorm1d(d_model)
-        self.dropout = nn.Dropout()
-        self.fc = nn.Linear(d_model, d_model)
-    
-    def forward(self, x):
-        '''
-        x.size = [bsz, d_model]
-        '''
-        x = self.dropout(self.batch_norm(x))
-        y = F.relu(self.fc(x))
-        
-        return y
-
-class FeatureMixer(nn.Module):
-    def __init__(self, featuremixer_layer, n_layers):
-        super().__init__()
-        
-        self.layers = nn.ModuleList([copy.deepcopy(featuremixer_layer) for i in range(n_layers)])
-        self.n_layers = n_layers
-    
-    def forward(self, x):
-        output = x
-        for layer in self.layers:
-            output = layer(output)
-            
-        return output
-
-        
 # Model: Base
 class CC(pl.LightningModule):
     '''Mainly define the `*_step_end` methods
@@ -635,7 +671,10 @@ def train_one(Model, yqtr, data_hparams, model_hparams, trainer_hparams):
     assert data_hparams['test_batch_size']%len(trainer_hparams['gpus'])==0, \
         f"`test_batch_size` must be divisible by `len(gpus)`. Currently batch_size={model_hparams['test_batch_size']}, gpus={trainer_hparams['gpus']}"
     
-        
+    # ----------------------------
+    # Initialize model and trainer
+    # ----------------------------
+    
     # init model
     model = Model(**model_hparams)
 
@@ -696,7 +735,7 @@ def train_one(Model, yqtr, data_hparams, model_hparams, trainer_hparams):
     log_ols_rmse(logger, data_hparams['yqtr'])
     
     # upload test_start
-    log_test_start(logger, data_hparams['roll_type'], data_hparams['yqtr'])
+    log_test_start(logger, data_hparams['window_size'], data_hparams['yqtr'])
     
     # If run on ASU, upload code explicitly
     if trainer_hparams['machine'] == 'ASU':
@@ -708,7 +747,11 @@ def train_one(Model, yqtr, data_hparams, model_hparams, trainer_hparams):
     # refresh GPU memory
     refresh_cuda_memory()
 
+    
+    # ----------------------------
     # fit and test
+    # ----------------------------
+
     try:
         # create datamodule
         datamodule = CCDataModule(**data_hparams)
@@ -728,7 +771,9 @@ def train_one(Model, yqtr, data_hparams, model_hparams, trainer_hparams):
         logger.finalize('finished')
 
 
+# + [markdown] toc-hr-collapsed=true
 # # MLP
+# -
 
 # ## model
 
@@ -779,7 +824,7 @@ class CCMLP(CC):
 
 # ## run
 
-# +
+'''
 # choose Model
 Model = CCMLP
 
@@ -793,7 +838,7 @@ data_hparams = {
     'test_batch_size':32,
     
     'text_in_dataset': False,
-    'roll_type': '5y', # key!
+    'window_size': '5y', # key!
 }
 
 # model hparams
@@ -844,7 +889,7 @@ trainer_hparams = {
 refresh_ckpt()
 
 # load split_df
-split_df = load_split_df(data_hparams['roll_type'])
+split_df = load_split_df(data_hparams['window_size'])
     
 # loop over windows
 np.random.seed(trainer_hparams['seed'])
@@ -858,13 +903,11 @@ for yqtr in split_df.yqtr:
     # train on select periods
     # if data_hparams['yqtr']=='2014-q1':
     train_one(Model, yqtr, data_hparams, model_hparams, trainer_hparams)
-
-
-# -
+'''
 
 # # RNN
 
-# +
+'''
 # ## Model
 
 # CCGRU
@@ -963,10 +1006,10 @@ class CCGRU(CC):
         return {'test_loss': loss_car}  
 
 
-# # + [markdown] toc-hr-collapsed=true toc-nb-collapsed=true
+# + [markdown] toc-hr-collapsed=true toc-nb-collapsed=true
 # ## run
 
-# # +
+# +
 # loop over 24 windows
 load_split_df()
 load_targets()
@@ -1028,15 +1071,11 @@ for window_i in range(len(split_df)):
 
     # train one window
     trainer_one(CCGRU, window_i, model_hparams, trainer_hparams)
-
-
-# -
-
-# -
+'''
 
 # # STL
 
-# ## `CCTransformerSTLTxt`
+# ## CCTransformerSTLTxt
 
 # car ~ txt
 class CCTransformerSTLTxt(CC):
@@ -1127,7 +1166,7 @@ class CCTransformerSTLTxt(CC):
         return {'transcriptid':transcriptid, 'y_car':y_car, 't_car': t_car}  
 
 
-# ## `CCTransformerSTLTxtFr`
+# ## CCTransformerSTLTxtFr
 
 # car ~ txt + fr
 class CCTransformerSTLTxtFr(CC):
@@ -1247,21 +1286,26 @@ class CCTransformerSTLTxtFr(CC):
 
 # ## run
 
-# + endofcell="--"
+# +
 # choose Model
 Model = CCTransformerSTLTxt
 
 # data hparams
 data_hparams = {
-    'preembedding_name': 'all_sbert_roberta_nlistsb_encoded', # key!
-    'targets_name': 'f_sue_keydevid_car_finratio_vol_transcriptid_sim_inflow_revision_retail_sentiment_norm_outlier', # key!
-
-    'batch_size': 32,
-    'val_batch_size':32,
-    'test_batch_size':32,
+    # inputs
+    'preembedding_name': 'longformer', 
+    'targets_name': 'f_sue_keydevid_car_finratio_vol_transcriptid_sim_inflow_revision_retail_sentiment_norm_outlier', 
+    'tid_cid_pair_name': 'qa', 
+    'tid_from_to_pair_name': '6qtr',
     
+    # batch size
+    'batch_size': 16,
+    'val_batch_size':8,
+    'test_batch_size':8,
+    
+    # window_size
     'text_in_dataset': True,
-    'roll_type': '3y', # key!
+    'window_size': 'all', # key!
 }
 
 # hparams
@@ -1270,7 +1314,7 @@ model_hparams = {
     'learning_rate':3e-4, # key!
     'n_layers_encoder': 4,
     'n_head_encoder': 8, 
-    'd_model': 1024,
+    'd_model': 768,
     'dff': 2048, # default: 2048
     'attn_dropout': 0.1,
     # 'dropout': 0.5
@@ -1286,7 +1330,7 @@ trainer_hparams = {
 
     # last: STL-50
     'machine': 'yu-workstation', # key!
-    'note': f"STL-53", # key!
+    'note': f"STL-test", # key!
     'log_every_n_steps': 10,
     'save_top_k': 1,
     'val_check_interval': 0.2, # key! (Eg: 0.25 - check 4 times in a epoch)
@@ -1316,28 +1360,30 @@ trainer_hparams = {
 refresh_ckpt()
 
 # load split_df
-split_df = load_split_df(data_hparams['roll_type'])
-    
+split_df = load_split_df(data_hparams['window_size'])
+
+# load tid_cid_pair
 # loop over windows!
 for yqtr in split_df.yqtr:
     np.random.seed(trainer_hparams['seed'])
     torch.manual_seed(trainer_hparams['seed'])
     
-    # Enforce yqtr>='2012-q4' (the earliest yqtr in roll_type=='3y')
-    if yqtr >= '2012-q4':
+    # Enforce yqtr>='2012-q4' (the earliest yqtr in window_size=='3y')
+    # if yqtr == 'non-roll-01':
 
-        # update current period
-        data_hparams.update({'yqtr': yqtr})
+    # update current period
+    data_hparams.update({'yqtr': yqtr})
 
-        # train on select periods
-        train_one(Model, yqtr, data_hparams, model_hparams, trainer_hparams)
+    # train on select periods
+    train_one(Model, yqtr, data_hparams, model_hparams, trainer_hparams)
 
-'''
 # -
 
 # # MTL
 
+#
 # ## model
+#
 
 # (MTL, hardshare) car + inf/rev ~ txt + fr
 class CCTransformerMTLHard(CC):
@@ -1624,9 +1670,11 @@ class CCTransformerMTLSoft(CC):
         # logging
         return {'test_loss': loss, 'test_loss_car': loss_car, 'test_loss_inflow': loss_inflow} 
 
+
 # ## run
 
-# +
+# + endofcell="--"
+'''
 # choose Model
 Model = CCTransformerSTLTxtFr
 
@@ -1635,7 +1683,7 @@ model_hparams = {
     'seed': 42, # key!
     'preembedding_name': 'all_sbert_roberta_nlistsb_encoded', # key!
     'targets_name': 'f_sue_keydevid_car_finratio_vol_transcriptid_sim_inflow_revision_sentiment_text_norm_wsrz', # key!
-    'roll_type': '3y',  # key!
+    'window_size': '3y',  # key!
     'gpus': [0,1],
     
     # task weight
@@ -1691,7 +1739,7 @@ trainer_hparams = {
 refresh_ckpt()
 
 # load split_df
-load_split_df(model_hparams['roll_type'])
+load_split_df(model_hparams['window_size'])
     
 # load targets_df
 load_targets(model_hparams['targets_name'])
@@ -1707,269 +1755,6 @@ for window_i in range(len(split_df)):
 
     # train one window
     trainer_one(Model, window_i, model_hparams, trainer_hparams)
-# -
-
-# # Predict
-
-# +
-model_hparams = {
-    'preembedding_name': 'all_sbert_roberta_nlistsb_encoded', # key!
-    'targets_name': 'f_sue_keydevid_car_finratio_vol_transcriptid_sim_inflow_revision_text_norm', # key!
-    'roll_type': '3y',  # key!
-}    
-
-# load split_df
-load_split_df(data_hparams['roll_type'])
-    
-# load targets_df
-load_targets(model_hparams['targets_name'])
-
-# load preembeddings
-load_preembeddings(model_hparams['preembedding_name'])
-
-# +
-model = CCTransformerMTLInfHard.load_from_checkpoint('D:/Checkpoints/earnings-call/3y-TSFM-(0.5car+0.5inf~txt+fr)-hardshare-norm/TSFM_roll-01_epoch=9_v0.ckpt')
-
-model.freeze()
-
-model.prepare_data()
-dataloader = model.test_dataloader()
-
-# +
-extractor = torch.nn.Sequential(*list(model.children())[:-8])
-
-for i, batch in enumerate(tqdm(dataloader)):
-    if i > 1: break
-    car, car_norm, inflow, inflow_norm, revision, revision_norm, \
-    transcriptid, embeddings, mask, \
-    fin_ratios = batch
-
-    # forward
-    output = extractor(embeddings, mask, fin_ratios)
-        
-
-
-# +
-# test on one batch
-def test_step_fr(model, batch):
-    # get input
-    docid, car, inp = batch
-
-    # forward
-    y_car = model(inp).item() # (N, 1)
-
-    return y_car, docid[0]
-    
-    
-def test_step_text(model, batch):
-    car, transcriptid, embeddings, mask, alpha, car_m1_m1, car_m2_m2, car_m30_m3,\
-    sest, sue, numest, sstdest, smedest, \
-    mcap, roa, bm, debt_asset, volatility, volume = batch
-
-    # forward
-    y_car = model(embeddings, mask).item() # (N, 1)
-    transcriptid = transcriptid.int().item()
-    docid = targets_df.loc[targets_df.transcriptid==transcriptid].docid.iloc[0]
-
-    return y_car, docid
-
-def test_step_text_fr(model, batch):
-    car, transcriptid, embeddings, mask, alpha, car_m1_m1, car_m2_m2, car_m30_m3,\
-    sest, sue, numest, sstdest, smedest, \
-    mcap, roa, bm, debt_asset, volatility, volume = batch
-
-    # forward
-    y_car = model(embeddings, mask, alpha, car_m1_m1, car_m2_m2, car_m30_m3, sest, sue, numest, sstdest, \
-                  smedest, mcap, roa, bm, debt_asset, volatility, volume).item() # (N, 1)
-    transcriptid = transcriptid.int().item()
-    docid = targets_df.loc[targets_df.transcriptid==transcriptid].docid.iloc[0]
-
-    return y_car, docid
-
-# test on one window
-def test_one_window(model, dataloader):
-    # select test_step
-    if type(model) in [CCMLP]:
-        test_step = test_step_fr
-    elif type(model) in [CCTransformerSTLTxtFr]:
-        test_step = test_step_text_fr
-    # elif type(model) in [CCTransformerSTLTxtFr]:
-    #    test_step = test_step_text_fr
-    
-    ys = []
-    for i, batch in enumerate(tqdm(dataloader)):
-        ys.append(test_step(model, batch))
-        # if i>=2: break
-    return pd.DataFrame(ys, columns=['y_car', 'docid'])
-
-# get prediction
-def predict_car():
-    global hparams
-    hparams = Namespace(**hparams)
-
-    # get roll_type
-    hparams.roll_type = hparams.ckpt_folder.split('/')[-1].split('-')[0]
-    
-    # load split_df
-    load_split_df(hparams.roll_type)
-
-    # load targets_df
-    load_targets(hparams.targets_name)
-
-    # load preembedding
-    load_preembeddings(hparams.preembedding_name)
-    
-    car_prediction = []
-    for i, name in enumerate(sorted(os.listdir(f'D:/Checkpoints/earnings-call/{hparams.ckpt_folder}'))):
-        # if i>=1: break
-            
-        if name.endswith('.ckpt'):
-
-            # get window
-            window = re.search(r'roll-\d{2}', name).group()
-
-            # load model
-            model = hparams.Model.load_from_checkpoint(f'D:/Checkpoints/earnings-call/{hparams.ckpt_folder}/{name}')
-
-            # get testloader
-            model.prepare_data()
-            test_dataloader = model.test_dataloader()
-            model.freeze()
-            
-            # predict
-            y = test_one_window(model, test_dataloader)
-            y['window'] = window
-            y['roll_type'] = hparams.roll_type
-
-            # append to ys
-            car_prediction.append(y)
-    car_prediction = pd.concat(car_prediction)
-    
-    car_prediction.reset_index().to_feather(f'data/{hparams.save_name}.feather')
-    return car_prediction
-
-
-# +
-hparams = {
-    'Model': CCTransformerSTLTxtFr, # key!
-    'ckpt_folder': '3y-TSFM-txt-fr', # key!
-    'save_name': 'car_pred_tsfm_txt_fr', # key!
-
-    'targets_name': 'f_sue_keydevid_car_finratio_vol_transcriptid_sim_text',
-    'preembedding_name': 'all_sbert_roberta_nlistsb_encoded',
-}
-
-# get car_ranking_predict
-car_pred_mlp = predict_car()
-
-# car_pred_mlp.reset_index().to_feather('data/car_pred_mlp.feather')
-# -
-
-car_pred_mlp.loc[car_pred_mlp.docid=='031122-2011-01-10']
-
-# # Backup
-
-# + [markdown] toc-hr-collapsed=true toc-nb-collapsed=true
-# ### `val` is after `train`
-
-# +
-# Dataset: Txt + Fin-ratio
-class CCDataset(Dataset):
-    
-    def __init__(self, split_window, split_type, text_in_dataset, roll_type, print_window, valid_transcriptids=None, transform=None):
-        '''
-        Args:
-            preembeddings (from globals): list of embeddings. Each element is a tensor (S, E) where S is number of sentences in a call
-            targets_df (from globals): DataFrame of targets variables.
-            split_df (from globals):
-            split_window: str. e.g., "roll-09"
-            split_type: str. 'train' or 'test'
-            text_only: only output CAR and transcripts if true, otherwise also output financial ratios
-            transcriptids: list. If provided, only the given transcripts will be used in generating the Dataset. `transcriptids` is applied **on top of** `split_window` and `split_type`
-        '''
-
-        self.text_in_dataset = text_in_dataset
-        
-        # decalre data as globals so don't   need to create/reload
-        global preembeddings, targets_df, split_df
-        
-        # get split dates from `split_df`
-        _, train_start, train_end, val_start, val_end, test_start, test_end, _ = tuple(split_df.loc[(split_df.window==split_window) & (split_df.roll_type==roll_type)].iloc[0])
-        # print current window
-        print(f'Current window: {split_window} ({roll_type}) \n(train: {train_start} to {train_end}) (val: {val_start} to {val_end}) (test: {test_start} to {test_end})')
-        
-        train_start = datetime.strptime(train_start, '%Y-%m-%d').date()
-        train_end = datetime.strptime(train_end, '%Y-%m-%d').date()
-        val_start = datetime.strptime(val_start, '%Y-%m-%d').date()
-        val_end = datetime.strptime(val_end, '%Y-%m-%d').date()
-        test_start = datetime.strptime(test_start, '%Y-%m-%d').date()
-        test_end = datetime.strptime(test_end, '%Y-%m-%d').date()
-        
-        # select valid transcriptids (preemb_keys) according to split dates 
-        if split_type=='train':
-            transcriptids = targets_df[targets_df.ciq_call_date.between(train_start, train_end)].transcriptid.tolist()
-        if split_type=='val':
-            transcriptids = targets_df[targets_df.ciq_call_date.between(val_start, val_end)].transcriptid.tolist()
-        elif split_type=='test':
-            transcriptids = targets_df[targets_df.ciq_call_date.between(test_start, test_end)].transcriptid.tolist()
-
-        self.valid_preemb_keys = set(transcriptids).intersection(set(preembeddings.keys()))
-        
-        if valid_transcriptids is not None:
-            self.valid_preemb_keys = self.valid_preemb_keys.intersection(set(valid_transcriptids))
-        
-        # self attributes
-        self.targets_df = targets_df
-        self.preembeddings = preembeddings
-        self.transform = transform
-        self.sent_len = sorted([(k, preembeddings[k].shape[0]) for k in self.valid_preemb_keys], key=itemgetter(1))
-        self.train_start = train_start
-        self.train_end = train_end
-        self.test_start = test_start
-        self.test_end = test_end
-        self.split_window = split_window
-        self.split_type = split_type
-        
-    def __len__(self):
-        return (len(self.valid_preemb_keys))
-    
-    def __getitem__(self, idx):
-        if torch.is_tensor(idx):
-            idx = idx.tolist()
-            
-        transcriptid = self.sent_len[idx][0]
-        targets = self.targets_df[self.targets_df.transcriptid==transcriptid].iloc[0]
-        
-        # inputs: preembeddings
-        embeddings = self.preembeddings[transcriptid]
-        
-        # all of the following targests are
-        # of type `numpy.float64`
-        sue = targets.sue
-        sest = targets.sest
-        car_0_30 = targets.car_0_30
-        
-        alpha = targets.alpha
-        volatility = targets.volatility
-        mcap = targets.mcap/1e6
-        bm = targets.bm
-        roa = targets.roa
-        debt_asset = targets.debt_asset
-        numest = targets.numest
-        smedest = targets.smedest
-        sstdest = targets.sstdest
-        car_m1_m1 = targets.car_m1_m1
-        car_m2_m2 = targets.car_m2_m2
-        car_m30_m3 = targets.car_m30_m3
-        volume = targets.volume
-        
-        if self.text_in_dataset:
-            return car_0_30, transcriptid, embeddings, alpha, car_m1_m1, car_m2_m2, car_m30_m3, \
-                   sest, sue, numest, sstdest, smedest, \
-                   mcap, roa, bm, debt_asset, volatility, volume
-        else:
-            return torch.tensor(car_0_30,dtype=torch.float32), \
-                   torch.tensor([alpha, car_m1_m1, car_m2_m2, car_m30_m3, sest, sue, numest, sstdest, smedest, mcap, roa, bm, debt_asset, volatility, volume], dtype=torch.float32)
-    
 '''
+# -
 # --

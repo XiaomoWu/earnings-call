@@ -147,7 +147,7 @@ docbin.to_disk(f'data/doc_sp500_trf.spacy')
 # ------------- With Chunks -------------------
 # Because of memory limitation, we split the data into chunks and process/store one by one.
 
-n_chunks = 10
+n_chunks = 5
 chunk_size = len(text_component_grouped)//n_chunks+1
 
 text_component_grouped_chunked = list(chunks(list(text_component_grouped.values()), chunk_size))
