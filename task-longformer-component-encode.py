@@ -162,7 +162,7 @@ def train(rank, world_size, components, batch_size):
                 output[tid][cid] = {'seq_len': valid_seq_len[_].item(), 'embedding': embedding_pool[_,...]}
                 # output[f'{cid}'] = {'seq_len': valid_seq_len[_].item(), 'embedding': embedding_pool[_,...]}
 
-        torch.save(output, f'data/Embeddings/preembeddings_longformer_test_rank{rank}.pt')
+        torch.save(output, f'data/Embeddings/preembeddings_longformer_rank{rank}.pt')
 
     # clean up
     dist.destroy_process_group()
@@ -181,8 +181,6 @@ if __name__ == '__main__':
     print('Loading component data...')
     ld('components_sp500', ldname='comps')
 
-    comps = comps[:10]
-    
     comps.sort(key=lambda x: len(x[2]), reverse=True) # sort components from longest to shortest
 
     print(f'N components: {len(comps)}')

@@ -8,7 +8,7 @@
 #       format_version: '1.5'
 #       jupytext_version: 1.9.1
 #   kernelspec:
-#     display_name: Python 3.8
+#     display_name: Python 3
 #     language: python
 #     name: python3
 # ---
@@ -18,14 +18,12 @@
 # +
 # import tensorflow as tf
 import comet_ml
-import copy
 import datatable as dt
 import gc
 import numpy as np
 import torch
 import os
 import pytorch_lightning as pl
-import spacy
 import torch.nn.functional as F
 import torch.optim as optim
 import shutil
@@ -38,8 +36,7 @@ from datatable import f, update
 from datetime import datetime
 from itertools import chain
 from operator import itemgetter
-from spacy.lang.en import English
-from scipy.sparse import coo_matrix
+from pytorch_lightning.loggers import CometLogger
 from tqdm.auto import tqdm
 from torch import nn
 from torch.nn import TransformerEncoder, TransformerEncoderLayer
@@ -51,8 +48,6 @@ from torch.utils.data import Dataset, DataLoader
 with open("/home/yu/OneDrive/App/Settings/jupyter + R + Python/python_startup.py", 'r') as _:
     exec(_.read())
 
-
-import os
 os.chdir('/home/yu/OneDrive/CC')
 
 # working directory
@@ -225,7 +220,7 @@ def load_tid_from_to_pair(tid_from_to_pair_name):
     return output
     
 # helper: log_ols_rmse
-def log_ols_rmse(logger, yqtr):
+def log_ols_rmse(logger, yqtr, window_size):
     '''
     Given yqtr, find the corresponding ols_rmse from `performance_by_model.feather`.
     Always compare to the same model: 'ols: car_norm ~ fr'
@@ -234,7 +229,7 @@ def log_ols_rmse(logger, yqtr):
     performance = dt.Frame(pd.read_feather('data/performance_by_yqtr.feather'))
 
 
-    ols_rmse_norm = performance[(f.model_name=='ols: car_norm ~ fr') & (f.window_size=='3y') & (f.yqtr==yqtr), f.rmse][0,0]
+    ols_rmse_norm = performance[(f.model_name=='ols: car_norm ~ fr') & (f.window_size==window_size) & (f.yqtr==yqtr), f.rmse][0,0]
     logger.experiment.log_parameter('ols_rmse_norm', ols_rmse_norm)
     
 def log_test_start(logger, window_size, yqtr):
@@ -311,7 +306,6 @@ class CCDataset(Dataset):
         targets_df = targets_df.loc[targets_df.transcriptid.isin(set(preembeddings.keys()))]
         
         # Assign states
-        self.targets_df = targets_df
         self.text_in_dataset = text_in_dataset
         if text_in_dataset:
             self.preembeddings = preembeddings
@@ -486,8 +480,7 @@ class CCDataModule(pl.LightningDataModule):
     def val_dataloader(self):
         # Caution: 
         # - To improve the validation speed, I'll set val_batch_size to 4. 
-        # - Must set `drop_last=True`, otherwise the `val_loss` tensors for different batches won't match and hence give you error.
-        # - Not to set `val_batch_size` too large (e.g., 16), otherwise you'll lose precious validation data points
+        # - It's safe to set `drop_last=True` without under-counting samples.
         
         collate_fn = self.collate_fn if self.text_in_dataset else None
         return DataLoader(self.val_dataset, batch_size=self.val_batch_size,
@@ -496,7 +489,7 @@ class CCDataModule(pl.LightningDataModule):
 
     def test_dataloader(self):
         collate_fn = self.collate_fn if self.text_in_dataset else None
-        return DataLoader(self.test_dataset, batch_size=4, num_workers=2, 
+        return DataLoader(self.test_dataset, batch_size=self.test_batch_size, num_workers=2, 
                           pin_memory=True, collate_fn=collate_fn, drop_last=False)
     
     def collate_fn(self, data):
@@ -691,7 +684,7 @@ def train_one(Model, yqtr, data_hparams, model_hparams, trainer_hparams):
         period=trainer_hparams['checkpoint_period'])
 
     # logger
-    logger = pl.loggers.CometLogger(
+    logger = CometLogger(
         api_key=COMET_API_KEY,
         save_dir='/data/logs',
         project_name='earnings-call',
@@ -716,7 +709,7 @@ def train_one(Model, yqtr, data_hparams, model_hparams, trainer_hparams):
                          log_every_n_steps=trainer_hparams['log_every_n_steps'],
                          val_check_interval=trainer_hparams['val_check_interval'], 
                          progress_bar_refresh_rate=5, 
-                         distributed_backend='dp', 
+                         distributed_backend='ddp', 
                          accumulate_grad_batches=trainer_hparams['accumulate_grad_batches'],
                          min_epochs=trainer_hparams['min_epochs'],
                          max_epochs=trainer_hparams['max_epochs'], 
@@ -732,7 +725,7 @@ def train_one(Model, yqtr, data_hparams, model_hparams, trainer_hparams):
     logger.experiment.log_parameters(trainer_hparams)
     
     # upload ols_rmse (for reference)
-    log_ols_rmse(logger, data_hparams['yqtr'])
+    log_ols_rmse(logger, data_hparams['yqtr'], data_hparams['window_size'])
     
     # upload test_start
     log_test_start(logger, data_hparams['window_size'], data_hparams['yqtr'])
@@ -761,7 +754,7 @@ def train_one(Model, yqtr, data_hparams, model_hparams, trainer_hparams):
         trainer.fit(model, datamodule)
 
         # test on the best model
-        trainer.test(ckpt_path='best')
+        trainer.test(ckpt_path=None)
 
     except RuntimeError as e:
         raise e
@@ -1145,10 +1138,10 @@ class CCTransformerSTLTxt(CC):
         y_car = self.fc_1(x_expert) # (N, 1)
         # y_car = self.fc_2(y_car)
         
-        t_car = car_norm
+        t_car = car_norm # (N,)
         
         # final output
-        return transcriptid.squeeze(), y_car.squeeze(), t_car.squeeze() 
+        return transcriptid, y_car.squeeze(), t_car 
     
     # traning step
     def training_step(self, batch, idx):
@@ -1296,16 +1289,16 @@ data_hparams = {
     'preembedding_name': 'longformer', 
     'targets_name': 'f_sue_keydevid_car_finratio_vol_transcriptid_sim_inflow_revision_retail_sentiment_norm_outlier', 
     'tid_cid_pair_name': 'qa', 
-    'tid_from_to_pair_name': '6qtr',
+    'tid_from_to_pair_name': '7qtr',
     
     # batch size
-    'batch_size': 16,
+    'batch_size': 12,
     'val_batch_size':8,
     'test_batch_size':8,
     
     # window_size
     'text_in_dataset': True,
-    'window_size': 'all', # key!
+    'window_size': '2008-2017', # key!
 }
 
 # hparams
@@ -1328,19 +1321,19 @@ trainer_hparams = {
     # gpus
     'gpus': [0,1], # key
 
-    # last: STL-50
+    # last: STL-57
     'machine': 'yu-workstation', # key!
-    'note': f"STL-test", # key!
+    'note': f"STL-57", # key!
     'log_every_n_steps': 10,
     'save_top_k': 1,
     'val_check_interval': 0.2, # key! (Eg: 0.25 - check 4 times in a epoch)
 
-    # data size
+    # epochs
     'precision': 32, # key!
-    'overfit_batches': 0.0,
+    'overfit_batches': 0.0, # default 0.0. decimal or int
     'min_epochs': 3, # default: 3
     'max_epochs': 20, # default: 20
-    'max_steps': None,
+    'max_steps': 200, # default: None
     'accumulate_grad_batches': 1,
 
     # Caution:
