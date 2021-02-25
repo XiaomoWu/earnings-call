@@ -278,7 +278,7 @@ class CCDataset(Dataset):
         '''
             
         # get split dates from `split_df`
-        _, train_start, train_end, test_start, test_end, _, yqtr = tuple(split_df.loc[(split_df.yqtr==yqtr) & (split_df.window_size==window_size)].iloc[0])
+        train_start, train_end, test_start, test_end, _, yqtr = tuple(split_df.loc[(split_df.yqtr==yqtr) & (split_df.window_size==window_size)].iloc[0])
         
         train_start = datetime.strptime(train_start, '%Y-%m-%d').date()
         train_end = datetime.strptime(train_end, '%Y-%m-%d').date()
@@ -607,6 +607,9 @@ class CC(pl.LightningModule):
         y_car = torch.cat([x['y_car'] for x in outputs])
         t_car = torch.cat([x['t_car'] for x in outputs])
         
+        y_car = self.all_gather(y_car)
+        t_car = self.all_gather(t_car)
+        
         rmse = torch.sqrt(self.mse_loss(y_car, t_car))
         self.log('val_rmse', rmse, on_step=False)
         
@@ -703,7 +706,7 @@ class CCMTL(CC):
         loss = loss_car + self.hparams.alpha*(loss_rev + loss_inf)/2
         
         rmse = torch.sqrt(loss)
-        self.log('val_rmse', rmse, on_step=False)
+        self.log('val_rmse', rmse, sync_dist=True)
         
     # test step
     def test_step_end(self, outputs):
@@ -830,7 +833,7 @@ def train_one(Model, yqtr, data_hparams, model_hparams, trainer_hparams):
                          log_every_n_steps=trainer_hparams['log_every_n_steps'],
                          val_check_interval=trainer_hparams['val_check_interval'], 
                          progress_bar_refresh_rate=5, 
-                         accelerator='dp',
+                         accelerator='ddp',
                          accumulate_grad_batches=trainer_hparams['accumulate_grad_batches'],
                          min_epochs=trainer_hparams['min_epochs'],
                          max_epochs=trainer_hparams['max_epochs'], 
@@ -885,7 +888,7 @@ def train_one(Model, yqtr, data_hparams, model_hparams, trainer_hparams):
         logger.finalize('finished')
 
 
-# + [markdown] toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true
+# + [markdown] toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true
 # # MLP
 # -
 
@@ -1024,7 +1027,7 @@ for yqtr in split_df.yqtr:
         
 '''
 
-# + [markdown] toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true
+# + [markdown] toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true
 # # RNN
 # -
 
@@ -1125,7 +1128,7 @@ class CCGRU(CC):
         # logging
         return {'test_loss': loss_car}  
 
-# + [markdown] toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true
+# + [markdown] toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true
 # # STL
 # -
 
@@ -1528,7 +1531,7 @@ data_hparams = {
     'test_batch_size':64,
     
     'text_in_dataset': False,
-    'window_size': '5y', # key!
+    'window_size': '6y', # key!
 }
 
 # model hparams
@@ -1550,8 +1553,8 @@ trainer_hparams = {
     
     # last: MLP-24
     'machine': 'yu-workstation', # key!
-    'note': f"MTL-16", # key!
-    'log_every_n_steps': 10,
+    'note': f"MTL-test", # key!
+    'log_every_n_steps': 50,
     'save_top_k': 1,
     'val_check_interval': 1.0,
 
@@ -1560,7 +1563,7 @@ trainer_hparams = {
     'overfit_batches': 0.0,
     'min_epochs': 10, # default: 10
     'max_epochs': 500, # default: 20. Must be larger enough to have at least one "val_rmse is not in the top 1"
-    'max_steps': None, # default None
+    'max_steps': 100, # default None
     'accumulate_grad_batches': 1,
 
     # Caution:
@@ -1591,7 +1594,7 @@ print(f'Start training...{trainer_hparams["note"]}')
 for yqtr in split_df.yqtr:
 
     # Only test after 2012-q4
-    if yqtr == '2013-q4':
+    if yqtr >= '2013-q4':
 
         # update current period
         data_hparams.update({'yqtr': yqtr})
