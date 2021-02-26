@@ -21,6 +21,7 @@ import argparse
 import comet_ml
 import datatable as dt
 import gc
+import glob
 import numpy as np
 import torch
 import os
@@ -56,7 +57,7 @@ os.chdir('/home/yu/OneDrive/CC')
 ROOT_DIR = '/home/yu/OneDrive/CC'
 DATA_DIR = f'{ROOT_DIR}/data'
 CHECKPOINT_DIR = '/home/yu/Data/CC-checkpoints'
-CHECKPOINT_TEMP_DIR = f'{CHECKPOINT_DIR}/archive'
+CHECKPOINT_ARCHIVE_DIR = f'{CHECKPOINT_DIR}/archive'
 
 # COMET API KEY
 COMET_API_KEY = 'tOoHzzV1S039683RxEr2Hl9PX'
@@ -106,19 +107,6 @@ else:
 # ## helpers
 
 # +
-# helper: tensor_to_list
-def tensor_to_str(tensor, tailing='\n'):
-    '''Given a 1d tensor, convert it to a list of string
-    
-    tailing: str. Added to the end of every element
-    '''
-    assert isinstance(tensor, torch.Tensor), 'Give me a tensor please!'
-    assert len(tensor.shape)==1, 'Must be 1D tensor!'
-    tensor = tensor.to('cpu').tolist()
-    tensor = [f'{str(x)}{tailing}' for x in tensor]
-    return tensor
-
-
 # helper: refresh cuda memory
 def refresh_cuda_memory():
     """
@@ -147,12 +135,12 @@ def refresh_ckpt():
         os.makedirs(CHECKPOINT_DIR)
     
     # create ckpt_temp_dir if not exists
-    if not os.path.exists(CHECKPOINT_TEMP_DIR):
-        os.makedirs(CHECKPOINT_TEMP_DIR)
+    if not os.path.exists(CHECKPOINT_ARCHIVE_DIR):
+        os.makedirs(CHECKPOINT_ARCHIVE_DIR)
     
     for name in os.listdir(CHECKPOINT_DIR):
         if name.endswith('.ckpt'):
-            shutil.move(f'{CHECKPOINT_DIR}/{name}', f'{CHECKPOINT_TEMP_DIR}/{name}')
+            shutil.move(f'{CHECKPOINT_DIR}/{name}', f'{CHECKPOINT_ARCHIVE_DIR}/{name}')
 
 # helpers: load targets
 def load_targets(targets_name, force=False):
@@ -491,7 +479,7 @@ class CCDataModule(pl.LightningDataModule):
 
         collate_fn = self.collate_fn if self.text_in_dataset else None
         return DataLoader(self.train_dataset, batch_size=self.batch_size, 
-                          shuffle=True, drop_last=False, num_workers=2,
+                          shuffle=True, drop_last=False, num_workers=8,
                           pin_memory=True, collate_fn=collate_fn)
     
     def val_dataloader(self):
@@ -501,12 +489,12 @@ class CCDataModule(pl.LightningDataModule):
         
         collate_fn = self.collate_fn if self.text_in_dataset else None
         return DataLoader(self.val_dataset, batch_size=self.val_batch_size,
-                          num_workers=2, pin_memory=True, collate_fn=collate_fn,
+                          num_workers=8, pin_memory=True, collate_fn=collate_fn,
                           drop_last=False)
 
     def test_dataloader(self):
         collate_fn = self.collate_fn if self.text_in_dataset else None
-        return DataLoader(self.test_dataset, batch_size=self.test_batch_size, num_workers=2, 
+        return DataLoader(self.test_dataset, batch_size=self.test_batch_size, num_workers=8, 
                           pin_memory=True, collate_fn=collate_fn, drop_last=False)
     
     def collate_fn(self, data):
@@ -573,78 +561,13 @@ class PositionalEncoding(nn.Module):
     
 # Model: Base
 class CC(pl.LightningModule):
-    '''Mainly define the `*_step_end` methods
-    '''
     def __init__(self, learning_rate):
         super().__init__()
         self.save_hyperparameters()
         
-    # forward
-    def forward(self):
-        pass
-    
-    # loss
-    def mse_loss(self, y, t):
-        return F.mse_loss(y, t)
+        # initialize pl.metrics here
+        self.mse_loss = pl.metrics.MeanSquaredError()
         
-    # def training_step_end
-    def training_step_end(self, outputs):
-        y = outputs['y_car']
-        t = outputs['t_car']
-        loss = self.mse_loss(y, t)
-        
-        return {'loss':loss}
-    
-    # def validation_step_end
-    def validation_step_end(self, outputs):
-        y_car = outputs['y_car']
-        t_car = outputs['t_car']
-        
-        return {'y_car':y_car, 't_car':t_car}
-        
-    # validation step
-    def validation_epoch_end(self, outputs):
-        '''
-        outputs: a list. len(outputs) == num_steps.
-            e.g., outputs = [{'val_loss': 3}, {'val_loss': 4}]
-        '''
-        y_car = torch.cat([x['y_car'] for x in outputs])
-        t_car = torch.cat([x['t_car'] for x in outputs])
-        
-        y_car = self.all_gather(y_car)
-        t_car = self.all_gather(t_car)
-        
-        rmse = torch.sqrt(self.mse_loss(y_car, t_car))
-        self.log('val_rmse', rmse, on_step=False)
-        
-    # test step
-    def test_step_end(self, outputs):
-        transcriptid = outputs['transcriptid']
-        
-        y_car = outputs['y_car']
-        t_car = outputs['t_car']
-        
-        return {'y_car':y_car, 't_car':t_car, 'transcriptid':transcriptid}
-    
-    def test_epoch_end(self, outputs):
-        
-        transcriptid = torch.cat([x['transcriptid'] for x in outputs])
-        y_car = torch.cat([x['y_car'] for x in outputs])
-        t_car = torch.cat([x['t_car'] for x in outputs])
-        
-        rmse = torch.sqrt(self.mse_loss(y_car, t_car))
-        self.log('test_rmse', rmse, on_step=False)
-        
-        # save & log `y_car`
-        y_car_filename = f'{DATA_DIR}/y_car.feather'
-        
-        df = pd.DataFrame({'transcriptid':transcriptid.to('cpu'),
-                           'y_car':y_car.to('cpu'),
-                           't_car':t_car.to('cpu')})
-        feather.write_feather(df, y_car_filename)
-            
-        self.logger.experiment.log_asset(y_car_filename)
-            
     # optimizer
     def configure_optimizers(self):
         optimizer = optim.Adam(self.parameters(), lr=self.hparams.learning_rate)
@@ -652,125 +575,58 @@ class CC(pl.LightningModule):
     
 # Model: MTL
 class CCMTL(CC):
-    '''Mainly define the `*_step_end` methods
-    '''
-    # loss
-    def binary_cross_entropy_loss(self, y, t):
-        return F.binary_cross_entropy(y, t)
-        
-    # def training_step_end
-    def training_step_end(self, outputs):
-        y_car = outputs['y_car']
-        y_rev = outputs['y_rev']
-        y_inf = outputs['y_inf']
-        
-        t_car = outputs['t_car']
-        t_rev = outputs['t_rev']
-        t_inf = outputs['t_inf']
-        
-        loss_car = self.mse_loss(y_car, t_car)
-        loss_rev = self.mse_loss(y_rev, t_rev)
-        loss_inf = self.mse_loss(y_inf, t_inf)
-        
-        loss = loss_car + self.hparams.alpha*(loss_rev + loss_inf)/2
-        
-        return {'loss':loss}
-    
-    # def validation_step_end
-    def validation_step_end(self, outputs):
-        y_car = outputs['y_car']
-        y_rev = outputs['y_rev']
-        y_inf = outputs['y_inf']
-        
-        t_car = outputs['t_car']
-        t_rev = outputs['t_rev']
-        t_inf = outputs['t_inf']
-        
-        return {'y_car': y_car, 'y_rev': y_rev, 'y_inf': y_inf,
-                't_car': t_car, 't_rev': t_rev, 't_inf': t_inf}
-        
-    # validation step
-    def validation_epoch_end(self, outputs):
-        '''
-        outputs: a list. len(outputs) == num_steps.
-            e.g., outputs = [{'val_loss': 3}, {'val_loss': 4}]
-        '''
-        y_car = torch.cat([x['y_car'] for x in outputs])
-        y_rev = torch.cat([x['y_rev'] for x in outputs])
-        y_inf = torch.cat([x['y_inf'] for x in outputs])
-        
-        t_car = torch.cat([x['t_car'] for x in outputs])
-        t_rev = torch.cat([x['t_rev'] for x in outputs])
-        t_inf = torch.cat([x['t_inf'] for x in outputs])
-        
-        loss_car = self.mse_loss(y_car, t_car)
-        loss_rev = self.mse_loss(y_rev, t_rev)
-        loss_inf = self.mse_loss(y_inf, t_inf)
-        
-        loss = loss_car + self.hparams.alpha*(loss_rev + loss_inf)/2
-        
-        rmse = torch.sqrt(loss)
-        self.log('val_rmse', rmse, sync_dist=True)
-        
-    # test step
-    def test_step_end(self, outputs):
-        transcriptid = outputs['transcriptid']
-        
-        y_car = outputs['y_car']
-        y_rev = outputs['y_rev']
-        y_inf = outputs['y_inf']
-        
-        t_car = outputs['t_car']
-        t_rev = outputs['t_rev']
-        t_inf = outputs['t_inf']
-        
-        return {'transcriptid': transcriptid,
-                'y_car': y_car, 'y_rev': y_rev, 'y_inf': y_inf,
-                't_car': t_car, 't_rev': t_rev, 't_inf': t_inf}
-    
-    def test_epoch_end(self, outputs):
-        
-        transcriptid = torch.cat([x['transcriptid'] for x in outputs])
-        y_car = torch.cat([x['y_car'] for x in outputs])
-        y_rev = torch.cat([x['y_rev'] for x in outputs])
-        y_inf = torch.cat([x['y_inf'] for x in outputs])
-        
-        t_car = torch.cat([x['t_car'] for x in outputs])
-        t_rev = torch.cat([x['t_rev'] for x in outputs])
-        t_inf = torch.cat([x['t_inf'] for x in outputs])
-        
-        loss_car = self.mse_loss(y_car, t_car)
-        loss_rev = self.mse_loss(y_rev, t_rev)
-        loss_inf = self.mse_loss(y_inf, t_inf)
-        
-        loss = loss_car
-        
-        rmse = torch.sqrt(loss_car)
-        self.log('test_rmse', rmse, on_step=False)
-        
-        # save & log `y_car`
-        y_car_filename = f'{DATA_DIR}/y_car.feather'
-        
-        df = pd.DataFrame({'transcriptid':transcriptid.to('cpu'),
-                           'y_car':y_car.to('cpu'),
-                           'y_rev':y_rev.to('cpu'),
-                           'y_inf':y_inf.to('cpu'),
-                           't_car':t_car.to('cpu'),
-                           't_rev':t_rev.to('cpu'),
-                           't_inf':t_inf.to('cpu')})
-        feather.write_feather(df, y_car_filename)
-            
-        self.logger.experiment.log_asset(y_car_filename)
-            
-    # optimizer
-    def configure_optimizers(self):
-        optimizer = optim.Adam(self.parameters(), lr=self.hparams.learning_rate)
-        return optimizer   
+    pass
 
 
 # -
 
 # ## def train()
+
+def test_with_ckpt(datamodule, logger):
+    # save & log `y_car`
+    ckpt_path = f"{CHECKPOINT_DIR}/{trainer_hparams['note']}_{data_hparams['yqtr']}*.ckpt"
+    ckpt_path = glob.glob(ckpt_path)
+    assert len(ckpt_path)==1, f'Multiple checkpoints found: {ckpt_path}'
+    ckpt_path = ckpt_path[0]
+
+    # init model from checkpoint
+    model = Model.load_from_checkpoint(ckpt_path)
+    model.eval()
+
+    transcriptids = []
+    y_car, y_rev, y_inf = [], [], []
+    t_car, t_rev, t_inf = [], [], []
+
+    with torch.no_grad():
+        for batch in datamodule.test_dataloader():
+            res = model.forward(batch)
+            transcriptids.extend(res['transcriptid'].tolist())
+            y_car.extend(res['y_car'].tolist())
+            y_rev.extend(res['y_rev'].tolist())
+            y_inf.extend(res['y_inf'].tolist())
+            t_car.extend(res['t_car'].tolist())
+            t_rev.extend(res['t_rev'].tolist())
+            t_inf.extend(res['t_inf'].tolist())
+
+    # upload yt
+    df = pd.DataFrame({'transcriptid':transcriptids,
+                       'y_car':y_car,
+                       'y_rev':y_rev,
+                       'y_inf':y_inf,
+                       't_car':t_car,
+                       't_rev':t_rev,
+                       't_inf':t_inf})
+    test_results = f'{DATA_DIR}/y_car.feather'
+    feather.write_feather(df, test_results)
+
+    logger.experiment.log_asset(test_results)
+    
+    # upload rmse
+    rmse = pl.metrics.functional.mean_squared_error(torch.Tensor(y_car),
+                                                    torch.Tensor(t_car))
+    rmse = torch.sqrt(rmse).item()
+    logger.experiment.log_parameter('test_rmse', rmse)
+
 
 # loop one
 def train_one(Model, yqtr, data_hparams, model_hparams, trainer_hparams):
@@ -787,7 +643,7 @@ def train_one(Model, yqtr, data_hparams, model_hparams, trainer_hparams):
     assert data_hparams['val_batch_size']%len(trainer_hparams['gpus'])==0, \
         f"`val_batch_size` must be divisible by `len(gpus)`. Currently batch_size={model_hparams['val_batch_size']}, gpus={trainer_hparams['gpus']}"
     
-    # check: val_batch_size//len(gpus)==0
+    # check: test_batch_size//len(gpus)==0
     assert data_hparams['test_batch_size']%len(trainer_hparams['gpus'])==0, \
         f"`test_batch_size` must be divisible by `len(gpus)`. Currently batch_size={model_hparams['test_batch_size']}, gpus={trainer_hparams['gpus']}"
 
@@ -807,7 +663,7 @@ def train_one(Model, yqtr, data_hparams, model_hparams, trainer_hparams):
         checkpoint_callback = pl.callbacks.ModelCheckpoint(
             verbose=True,
             mode='min',
-            monitor='val_rmse',
+            monitor='val_loss',
             dirpath=CHECKPOINT_DIR,
             filename=ckpt_prefix,
             save_top_k=trainer_hparams['save_top_k'],
@@ -824,7 +680,7 @@ def train_one(Model, yqtr, data_hparams, model_hparams, trainer_hparams):
 
     # early stop
     early_stop_callback = pl.callbacks.EarlyStopping(
-        monitor='val_rmse',
+        monitor='val_loss',
         min_delta=0,
         patience=trainer_hparams['early_stop_patience'],
         verbose=True,
@@ -838,7 +694,7 @@ def train_one(Model, yqtr, data_hparams, model_hparams, trainer_hparams):
                          overfit_batches=trainer_hparams['overfit_batches'], 
                          log_every_n_steps=trainer_hparams['log_every_n_steps'],
                          val_check_interval=trainer_hparams['val_check_interval'], 
-                         progress_bar_refresh_rate=5, 
+                         progress_bar_refresh_rate=10, 
                          accelerator='ddp',
                          accumulate_grad_batches=trainer_hparams['accumulate_grad_batches'],
                          min_epochs=trainer_hparams['min_epochs'],
@@ -855,7 +711,7 @@ def train_one(Model, yqtr, data_hparams, model_hparams, trainer_hparams):
     logger.experiment.log_parameters(trainer_hparams)
     
     # upload ols_rmse (for reference)
-    # log_ols_rmse(logger, data_hparams['yqtr'], data_hparams['window_size'])
+    log_ols_rmse(logger, data_hparams['yqtr'], data_hparams['window_size'])
     
     # upload test_start
     log_test_start(logger, data_hparams['window_size'], data_hparams['yqtr'])
@@ -870,7 +726,7 @@ def train_one(Model, yqtr, data_hparams, model_hparams, trainer_hparams):
 
     try:
         with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message='`num_workers`')
+            warnings.simplefilter("ignore")
             
             # create datamodule
             datamodule = CCDataModule(**data_hparams)
@@ -879,9 +735,9 @@ def train_one(Model, yqtr, data_hparams, model_hparams, trainer_hparams):
             # train the model
             trainer.fit(model, datamodule)
         
-            # test on the best model
-            trainer.test(ckpt_path=None)
-
+            # test with best ckpt
+            test_with_ckpt(datamodule, logger)
+        
     except RuntimeError as e:
         raise e
     finally:
@@ -890,7 +746,7 @@ def train_one(Model, yqtr, data_hparams, model_hparams, trainer_hparams):
         logger.finalize('finished')
 
 
-# + [markdown] toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true
+# + [markdown] toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true
 # # MLP
 # -
 
@@ -932,17 +788,18 @@ class CCMLP(CC):
     # train step
     def training_step(self, batch, idx):
         transcriptid, y_car, t_car = self.shared_step(batch)
-        return {'y_car': y_car, 't_car': t_car}
+        
+        loss = self.mse_loss(y_car, t_car)
+        self.log('train_loss', loss)
+        
+        return loss
         
     # validation step
     def validation_step(self, batch, idx):
         transcriptid, y_car, t_car = self.shared_step(batch)
-        return {'y_car': y_car, 't_car': t_car}
         
-    # test step
-    def test_step(self, batch, idx):
-        transcriptid, y_car, t_car = self.shared_step(batch)
-        return {'transcriptid':transcriptid, 'y_car':y_car, 't_car': t_car}  
+        loss = self.mse_loss(y_car, t_car)
+        self.log('val_loss', loss)
 
 # ## run
 
@@ -1029,7 +886,7 @@ for yqtr in split_df.yqtr:
         
 '''
 
-# + [markdown] toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true
+# + [markdown] toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true
 # # RNN
 # -
 
@@ -1130,7 +987,7 @@ class CCGRU(CC):
         # logging
         return {'test_loss': loss_car}  
 
-# + [markdown] toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true
+# + [markdown] toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true
 # # STL
 # -
 
@@ -1461,19 +1318,12 @@ class CCMTLFr(CCMTL):
         self.fc_inf = nn.Linear(16, 1)
         
     def forward(self, batch):
-        transcriptid, car, car_stand, inflow, inflow_stand, \
-        revision, revision_stand, manual_txt, fin_ratios = batch
+        transcriptid, y_car, y_rev, y_inf, \
+        t_car, t_rev, t_inf = self.shared_step(batch)
         
-        t_car = car_stand
-        t_rev = revision_stand
-        t_inf = inflow_stand
-
-        x = fin_ratios
-        x = F.relu(self.fc_1(x))
-        # x = F.relu(self.fc_2(x))
-        
-        return transcriptid, t_car, x
-    
+        return {'transcriptid': transcriptid,
+                'y_car': y_car, 'y_rev': y_rev, 'y_inf': y_inf,
+                't_car': t_car, 't_rev': t_rev, 't_inf': t_inf}
     
     def shared_step(self, batch):
         transcriptid, car, car_stand, inflow, inflow_stand, \
@@ -1499,23 +1349,29 @@ class CCMTLFr(CCMTL):
     def training_step(self, batch, idx):
         transcriptid, y_car, y_rev, y_inf, \
         t_car, t_rev, t_inf = self.shared_step(batch)
-        return {'y_car': y_car, 'y_rev': y_rev, 'y_inf': y_inf,
-                't_car': t_car, 't_rev': t_rev, 't_inf': t_inf}
         
+        loss_car = self.mse_loss(y_car, t_car)
+        loss_rev = self.mse_loss(y_rev, t_rev)
+        loss_inf = self.mse_loss(y_inf, t_inf)
+        
+        loss = loss_car + self.hparams.alpha*(loss_rev + loss_inf)/2
+        self.log('train_loss', loss)
+        
+        return loss
+    
     # validation step
     def validation_step(self, batch, idx):
         transcriptid, y_car, y_rev, y_inf, \
         t_car, t_rev, t_inf = self.shared_step(batch)
-        return {'y_car': y_car, 'y_rev': y_rev, 'y_inf': y_inf,
-                't_car': t_car, 't_rev': t_rev, 't_inf': t_inf}
         
-    # test step
-    def test_step(self, batch, idx):
-        transcriptid, y_car, y_rev, y_inf, \
-        t_car, t_rev, t_inf = self.shared_step(batch)
-        return {'transcriptid': transcriptid,
-                'y_car': y_car, 'y_rev': y_rev, 'y_inf': y_inf,
-                't_car': t_car, 't_rev': t_rev, 't_inf': t_inf}
+        loss_car = self.mse_loss(y_car, t_car)
+        loss_rev = self.mse_loss(y_rev, t_rev)
+        loss_inf = self.mse_loss(y_inf, t_inf)
+        
+        loss = loss_car + self.hparams.alpha*(loss_rev + loss_inf)/2
+        
+        self.log('val_loss', loss)
+
 
 # ## run
 
@@ -1565,7 +1421,7 @@ trainer_hparams = {
     
     # last: MLP-24
     'machine': 'yu-workstation', # key!
-    'note': f"MTL-test2", # key!
+    'note': f"MTL-test3", # key!
     'log_every_n_steps': 50,
     'save_top_k': 1,
     'val_check_interval': 1.0,
@@ -1622,7 +1478,7 @@ train_one(Model, yqtr, data_hparams, model_hparams, trainer_hparams)
 Model = CCMTLFr
 
 ckpt_name = 'MTL-14'
-ckpt_paths = [path for path in os.listdir(f'{CHECKPOINT_TEMP_DIR}')
+ckpt_paths = [path for path in os.listdir(f'{CHECKPOINT_ARCHIVE_DIR}')
               if path.startswith(ckpt_name+'_')]
 print(f'N checkpoint found: {len(ckpt_paths)}')
 
@@ -1691,7 +1547,7 @@ for yqtr in tqdm(split_df.yqtr):
     assert len(ckpt_path)==1, f'Multiple or no checkpoint found for "{ckpt_name}_{yqtr}"'
     ckpt_path = ckpt_path[0]
     
-    model = Model.load_from_checkpoint(f'{CHECKPOINT_TEMP_DIR}/{ckpt_path}')
+    model = Model.load_from_checkpoint(f'{CHECKPOINT_ARCHIVE_DIR}/{ckpt_path}')
     model.eval()
     
     # extract
@@ -1764,7 +1620,7 @@ class cRT(CC):
         
 
 ckpt_name = 'MTL-11'
-ckpt_paths = [path for path in os.listdir(f'{CHECKPOINT_TEMP_DIR}')
+ckpt_paths = [path for path in os.listdir(f'{CHECKPOINT_ARCHIVE_DIR}')
               if path.startswith(ckpt_name+'_')]
 print(f'N checkpoint found: {len(ckpt_paths)}')
 
@@ -1821,7 +1677,7 @@ for yqtr in tqdm(split_df.yqtr):
            f'Multiple or no checkpoint found for "{ckpt_name}_{yqtr}"'
     ckpt_path = ckpt_path[0]
     
-    extractor = CCMTLFr.load_from_checkpoint(f'{CHECKPOINT_TEMP_DIR}/{ckpt_path}')
+    extractor = CCMTLFr.load_from_checkpoint(f'{CHECKPOINT_ARCHIVE_DIR}/{ckpt_path}')
     extractor.eval()
         
     # load train/test data
