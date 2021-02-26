@@ -479,7 +479,7 @@ class CCDataModule(pl.LightningDataModule):
 
         collate_fn = self.collate_fn if self.text_in_dataset else None
         return DataLoader(self.train_dataset, batch_size=self.batch_size, 
-                          shuffle=True, drop_last=False, num_workers=8,
+                          shuffle=True, drop_last=False, num_workers=16,
                           pin_memory=True, collate_fn=collate_fn)
     
     def val_dataloader(self):
@@ -489,12 +489,12 @@ class CCDataModule(pl.LightningDataModule):
         
         collate_fn = self.collate_fn if self.text_in_dataset else None
         return DataLoader(self.val_dataset, batch_size=self.val_batch_size,
-                          num_workers=8, pin_memory=True, collate_fn=collate_fn,
+                          num_workers=2, pin_memory=True, collate_fn=collate_fn,
                           drop_last=False)
 
     def test_dataloader(self):
         collate_fn = self.collate_fn if self.text_in_dataset else None
-        return DataLoader(self.test_dataset, batch_size=self.test_batch_size, num_workers=8, 
+        return DataLoader(self.test_dataset, batch_size=self.test_batch_size, num_workers=2, 
                           pin_memory=True, collate_fn=collate_fn, drop_last=False)
     
     def collate_fn(self, data):
