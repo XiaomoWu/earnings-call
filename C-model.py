@@ -17,6 +17,7 @@
 
 # +
 # import tensorflow as tf
+import argparse
 import comet_ml
 import datatable as dt
 import gc
@@ -29,6 +30,7 @@ import torch.optim as optim
 import shutil
 import pandas as pd
 import pyarrow.feather as feather
+import warnings
 
 from argparse import Namespace
 from collections import OrderedDict, defaultdict
@@ -56,19 +58,20 @@ DATA_DIR = f'{ROOT_DIR}/data'
 CHECKPOINT_DIR = '/home/yu/Data/CC-checkpoints'
 CHECKPOINT_TEMP_DIR = f'{CHECKPOINT_DIR}/archive'
 
-print(f'ROOT_DIR: {ROOT_DIR}')
-print(f'DATA_DIR: {DATA_DIR}')
-print(f'CHECKPOINT_DIR: {CHECKPOINT_DIR}')
-
 # COMET API KEY
 COMET_API_KEY = 'tOoHzzV1S039683RxEr2Hl9PX'
 
 # set random seed
-torch.backends.cudnn.deterministic = False;
-torch.backends.cudnn.benchmark = True;
+torch.backends.cudnn.deterministic = False
+torch.backends.cudnn.benchmark = True
 torch.backends.cudnn.enabled = True
 
-# set device 'cuda' or 'cpu'
+'''
+# print machine config
+print(f'ROOT_DIR: {ROOT_DIR}')
+print(f'DATA_DIR: {DATA_DIR}')
+print(f'CHECKPOINT_DIR: {CHECKPOINT_DIR}')
+
 if torch.cuda.is_available():
     n_cuda = torch.cuda.device_count();
     
@@ -92,7 +95,8 @@ if torch.cuda.is_available():
     print('\nGPU memory:');
     log_gpu_memory();
 else:
-    print('GPU NOT enabled');
+    print('GPU NOT enabled')
+'''
 
 
 # -
@@ -798,14 +802,16 @@ def train_one(Model, yqtr, data_hparams, model_hparams, trainer_hparams):
     ckpt_prefix = f"{trainer_hparams['note']}_{data_hparams['yqtr']}".replace('*', '')
     ckpt_prefix = ckpt_prefix + '_{epoch}'
     
-    checkpoint_callback = pl.callbacks.ModelCheckpoint(
-        verbose=True,
-        mode='min',
-        monitor='val_rmse',
-        dirpath=CHECKPOINT_DIR,
-        filename=ckpt_prefix,
-        save_top_k=trainer_hparams['save_top_k'],
-        period=trainer_hparams['checkpoint_period'])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        checkpoint_callback = pl.callbacks.ModelCheckpoint(
+            verbose=True,
+            mode='min',
+            monitor='val_rmse',
+            dirpath=CHECKPOINT_DIR,
+            filename=ckpt_prefix,
+            save_top_k=trainer_hparams['save_top_k'],
+            period=trainer_hparams['checkpoint_period'])
 
     # logger
     logger = CometLogger(
@@ -854,13 +860,6 @@ def train_one(Model, yqtr, data_hparams, model_hparams, trainer_hparams):
     # upload test_start
     log_test_start(logger, data_hparams['window_size'], data_hparams['yqtr'])
     
-    # If run on ASU, upload code explicitly
-    if trainer_hparams['machine'] == 'ASU':
-        codefile = [name for name in os.listdir('.') if name.endswith('.py')]
-        assert len(codefile)==1, f'There must be only one `.py` file in the current directory! {len(codefile)} files detected: {codefile}'
-        logger.experiment.log_asset(codefile[0])
-    
-    
     # refresh GPU memory
     # refresh_cuda_memory()
 
@@ -870,15 +869,18 @@ def train_one(Model, yqtr, data_hparams, model_hparams, trainer_hparams):
     # ----------------------------
 
     try:
-        # create datamodule
-        datamodule = CCDataModule(**data_hparams)
-        datamodule.setup()
-
-        # train the model
-        trainer.fit(model, datamodule)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message='`num_workers`')
+            
+            # create datamodule
+            datamodule = CCDataModule(**data_hparams)
+            datamodule.setup()
+            
+            # train the model
+            trainer.fit(model, datamodule)
         
-        # test on the best model
-        trainer.test(ckpt_path=None)
+            # test on the best model
+            trainer.test(ckpt_path=None)
 
     except RuntimeError as e:
         raise e
@@ -1519,6 +1521,16 @@ class CCMTLFr(CCMTL):
 
 # +
 # '''
+
+# parse arg
+parser = argparse.ArgumentParser(description='Earnings Call')
+parser.add_argument('--yqtr', type=str, required=True)
+parser.add_argument('--window_size', type=str, required=True)
+
+args = parser.parse_args()
+yqtr = args.yqtr
+window_size = args.window_size
+
 # choose Model
 Model = CCMTLFr
 
@@ -1531,7 +1543,7 @@ data_hparams = {
     'test_batch_size':64,
     
     'text_in_dataset': False,
-    'window_size': '6y', # key!
+    'window_size': window_size, # key!
 }
 
 # model hparams
@@ -1553,7 +1565,7 @@ trainer_hparams = {
     
     # last: MLP-24
     'machine': 'yu-workstation', # key!
-    'note': f"MTL-test", # key!
+    'note': f"MTL-test2", # key!
     'log_every_n_steps': 50,
     'save_top_k': 1,
     'val_check_interval': 1.0,
@@ -1563,7 +1575,7 @@ trainer_hparams = {
     'overfit_batches': 0.0,
     'min_epochs': 10, # default: 10
     'max_epochs': 500, # default: 20. Must be larger enough to have at least one "val_rmse is not in the top 1"
-    'max_steps': 100, # default None
+    'max_steps': None, # default None
     'accumulate_grad_batches': 1,
 
     # Caution:
@@ -1591,16 +1603,11 @@ torch.manual_seed(trainer_hparams['seed'])
 
 print(f'Start training...{trainer_hparams["note"]}')
 
-for yqtr in split_df.yqtr:
 
-    # Only test after 2012-q4
-    if yqtr >= '2013-q4':
+# train on select periods
+data_hparams.update({'yqtr': yqtr})
 
-        # update current period
-        data_hparams.update({'yqtr': yqtr})
-
-        # train on select periods
-        train_one(Model, yqtr, data_hparams, model_hparams, trainer_hparams)
+train_one(Model, yqtr, data_hparams, model_hparams, trainer_hparams)
 # '''
 # -
 
