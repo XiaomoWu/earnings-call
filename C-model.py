@@ -145,7 +145,7 @@ def refresh_ckpt():
 # helpers: load targets
 def load_targets(targets_name, force=False):
     targets_df = feather.read_feather(f'{DATA_DIR}/{targets_name}.feather')
-    targets_df = targets_df[targets_df.outlier_flag1==False]
+    # targets_df = targets_df[targets_df.outlier_flag1==False]
     return targets_df
         
 # helpers: load preembeddings
@@ -325,16 +325,14 @@ class CCDataset(Dataset):
         # all of the following targests are
         # of type `numpy.float64`
         transcriptid = targets.transcriptid
-        car_0_30 = targets.car_0_30
-        car_0_30_stand = targets.car_0_30_stand
-        revision = targets.revision
+        car_stand = targets.car_0_30_stand
         revision_stand = targets.revision_stand
-        inflow = targets.inflow
         inflow_stand = targets.inflow_stand
+        retail_stand = targets.retail_stand
         
         # using the normalized features
         similarity = targets.similarity_bigram_stand
-        sentiment = targets.qa_positive_sent_stand
+        sentiment = targets.sentiment_negative_qa_analyst_stand
         sue = targets.sue_stand
         sest = targets.sest_stand        
         alpha = targets.alpha_stand
@@ -358,17 +356,17 @@ class CCDataset(Dataset):
                                             self.tid_cid_pair,
                                             self.tid_from_to_pair)
 
-            return car_0_30, car_0_30_stand, inflow, inflow_stand, revision,\
-                   revision_stand,  transcriptid, embeddings, \
-                   [alpha, car_m1_m1, car_m2_m2, car_m30_m3, sest, sue, numest, sstdest, smedest, mcap, roa, bm, debt_asset, volatility, volume]
+            return car_stand, inflow_stand, revision_stand, retail_stand, \
+                   transcriptid, embeddings, \
+                   [alpha, car_m1_m1, car_m2_m2, car_m30_m3, sest, sue, numest,\
+                    sstdest, smedest, mcap, roa, bm, debt_asset, volatility,\
+                    volume]
         else:
             return torch.tensor(transcriptid,dtype=torch.int64), \
-                   torch.tensor(car_0_30,dtype=torch.float32), \
-                   torch.tensor(car_0_30_stand,dtype=torch.float32), \
-                   torch.tensor(inflow,dtype=torch.float32), \
+                   torch.tensor(car_stand,dtype=torch.float32), \
                    torch.tensor(inflow_stand,dtype=torch.float32), \
-                   torch.tensor(revision,dtype=torch.float32), \
                    torch.tensor(revision_stand,dtype=torch.float32), \
+                   torch.tensor(retail_stand,dtype=torch.float32), \
                    torch.tensor([similarity, sentiment],
                                 dtype=torch.float32),\
                    torch.tensor([alpha, car_m1_m1, car_m2_m2, car_m30_m3,\
@@ -479,7 +477,7 @@ class CCDataModule(pl.LightningDataModule):
 
         collate_fn = self.collate_fn if self.text_in_dataset else None
         return DataLoader(self.train_dataset, batch_size=self.batch_size, 
-                          shuffle=True, drop_last=False, num_workers=16,
+                          shuffle=True, drop_last=False, num_workers=4,
                           pin_memory=True, collate_fn=collate_fn)
     
     def val_dataloader(self):
@@ -489,12 +487,12 @@ class CCDataModule(pl.LightningDataModule):
         
         collate_fn = self.collate_fn if self.text_in_dataset else None
         return DataLoader(self.val_dataset, batch_size=self.val_batch_size,
-                          num_workers=2, pin_memory=True, collate_fn=collate_fn,
+                          num_workers=4, pin_memory=True, collate_fn=collate_fn,
                           drop_last=False)
 
     def test_dataloader(self):
         collate_fn = self.collate_fn if self.text_in_dataset else None
-        return DataLoader(self.test_dataset, batch_size=self.test_batch_size, num_workers=2, 
+        return DataLoader(self.test_dataset, batch_size=self.test_batch_size, num_workers=4, 
                           pin_memory=True, collate_fn=collate_fn, drop_last=False)
     
     def collate_fn(self, data):
@@ -572,10 +570,6 @@ class CC(pl.LightningModule):
     def configure_optimizers(self):
         optimizer = optim.Adam(self.parameters(), lr=self.hparams.learning_rate)
         return optimizer   
-    
-# Model: MTL
-class CCMTL(CC):
-    pass
 
 
 # -
@@ -594,30 +588,50 @@ def test_with_ckpt(datamodule, logger):
     model.eval()
 
     transcriptids = []
-    y_car, y_rev, y_inf = [], [], []
-    t_car, t_rev, t_inf = [], [], []
+    y_car, y_rev, y_inf, y_ret = [], [], [], []
+    t_car, t_rev, t_inf, t_ret = [], [], [], []
 
     with torch.no_grad():
         for batch in datamodule.test_dataloader():
             res = model.forward(batch)
+            
             transcriptids.extend(res['transcriptid'].tolist())
             y_car.extend(res['y_car'].tolist())
-            y_rev.extend(res['y_rev'].tolist())
-            y_inf.extend(res['y_inf'].tolist())
             t_car.extend(res['t_car'].tolist())
-            t_rev.extend(res['t_rev'].tolist())
-            t_inf.extend(res['t_inf'].tolist())
+            
+            if 'y_rev' in res:
+                y_rev.extend(res['y_rev'].tolist())
+            if 'y_inf' in res:
+                y_inf.extend(res['y_inf'].tolist())
+            if 'y_ret' in res:
+                y_ret.extend(res['y_ret'].tolist()) 
+            if 't_rev' in res:
+                t_rev.extend(res['t_rev'].tolist())
+            if 't_inf' in res:
+                t_inf.extend(res['t_inf'].tolist())
+            if 't_ret' in res:
+                t_ret.extend(res['t_ret'].tolist())
 
     # upload yt
-    df = pd.DataFrame({'transcriptid':transcriptids,
-                       'y_car':y_car,
-                       'y_rev':y_rev,
-                       'y_inf':y_inf,
-                       't_car':t_car,
-                       't_rev':t_rev,
-                       't_inf':t_inf})
+    df = dt.Frame({'transcriptid':transcriptids,
+                   'y_car':y_car,
+                   't_car':t_car})
+    if len(y_inf)==len(y_car):
+        df[:, update(y_inf=dt.Frame(y_inf))]
+    if len(y_rev)==len(y_car):
+        df[:, update(y_rev=dt.Frame(y_rev))]
+    if len(y_ret)==len(y_car):
+        df[:, update(y_ret=dt.Frame(y_ret))]
+        
+    if len(t_rev)==len(t_car):
+        df[:, update(t_rev=dt.Frame(t_rev))]
+    if len(t_inf)==len(t_car):
+        df[:, update(t_inf=dt.Frame(t_inf))]
+    if len(t_ret)==len(t_car):
+        df[:, update(t_ret=dt.Frame(t_ret))]
+    
     test_results = f'{DATA_DIR}/y_car.feather'
-    feather.write_feather(df, test_results)
+    feather.write_feather(df.to_pandas(), test_results)
 
     logger.experiment.log_asset(test_results)
     
@@ -694,7 +708,7 @@ def train_one(Model, yqtr, data_hparams, model_hparams, trainer_hparams):
                          overfit_batches=trainer_hparams['overfit_batches'], 
                          log_every_n_steps=trainer_hparams['log_every_n_steps'],
                          val_check_interval=trainer_hparams['val_check_interval'], 
-                         progress_bar_refresh_rate=10, 
+                         progress_bar_refresh_rate=20, 
                          accelerator='ddp',
                          accumulate_grad_batches=trainer_hparams['accumulate_grad_batches'],
                          min_epochs=trainer_hparams['min_epochs'],
@@ -746,7 +760,7 @@ def train_one(Model, yqtr, data_hparams, model_hparams, trainer_hparams):
         logger.finalize('finished')
 
 
-# + [markdown] toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true
+# + [markdown] toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true
 # # MLP
 # -
 
@@ -764,26 +778,34 @@ class CCMLP(CC):
         # self.dropout_2 = nn.Dropout(self.hparams.dropout)
         
         # fc layers
-        self.fc_1 = nn.Linear(15, 16)
-        self.fc_2 = nn.Linear(16, 1)
+        self.fc_1 = nn.Linear(17, 32)
+        self.fc_2 = nn.Linear(32, 1)
         #self.fc_3 = nn.Linear(32, 1)
         
-    def forward(self):
-        pass
+    def forward(self, batch):
+        transcriptid, y_car, t_car = self.shared_step(batch)
+        
+        return {'transcriptid': transcriptid,
+                'y_car': y_car, 
+                't_car': t_car}
+    
     
     def shared_step(self, batch):
         transcriptid, car, car_stand, inflow, inflow_stand, \
         revision, revision_stand, manual_txt, fin_ratios = batch
-        # x = torch.cat([fin_ratios, manual_txt], dim=-1) # (N, 2+15)
-    
-        x = fin_ratios
+        
+        x = torch.cat([fin_ratios, manual_txt], dim=-1) # (N, 2+15)
+        # x = fin_ratios
         
         x_car = self.dropout_1(F.relu(self.fc_1(x)))
         y_car = self.fc_2(x_car) # (N, 1)    
         
         t_car = car_stand
         
-        return transcriptid, y_car.squeeze(), t_car 
+        # regularize dimension
+        y_car = y_car.squeeze(-1)
+        
+        return transcriptid, y_car, t_car 
         
     # train step
     def training_step(self, batch, idx):
@@ -804,6 +826,14 @@ class CCMLP(CC):
 # ## run
 
 '''
+# parse arg
+parser = argparse.ArgumentParser(description='Earnings Call')
+parser.add_argument('--yqtr', type=str, required=True)
+parser.add_argument('--window_size', type=str, required=True)
+parser.add_argument('--note', type=str, required=True)
+
+args = parser.parse_args()
+
 # choose Model
 Model = CCMLP
 
@@ -811,17 +841,17 @@ Model = CCMLP
 data_hparams = {
     'targets_name': 'targets_final', # key!
 
-    'batch_size': 64,
+    'batch_size': 256,
     'val_batch_size':64,
     'test_batch_size':64,
     
     'text_in_dataset': False,
-    'window_size': '6y', # key!
+    'window_size': args.window_size # key!
 }
 
 # model hparams
 model_hparams = {
-    'learning_rate': 1e-4,
+    'learning_rate': 1e-2,
     'dropout': 0.1,
 }
 
@@ -837,8 +867,8 @@ trainer_hparams = {
     
     # last: 
     'machine': 'yu-workstation', # key!
-    'note': f"MLP-02", # key!
-    'log_every_n_steps': 10,
+    'note': f"MLP-03", # key!
+    'log_every_n_steps': 50,
     'save_top_k': 1,
     'val_check_interval': 1.0,
 
@@ -854,17 +884,13 @@ trainer_hparams = {
     # The check of patience depends on **how often you compute your val_loss** (`val_check_interval`). 
     # Say you check val every N baches, then `early_stop_callback` will compare to your latest N **baches**.
     # If you compute val_loss every N **epoches**, then `early_stop_callback` will compare to the latest N **epochs**.
-    'early_stop_patience': 10, # default: 3
+    'early_stop_patience': 25, # default: 25
 
     # Caution:
-    # In pervious versions, if you check validatoin multiple times within a epoch,
-    # you have to set `check_point_period=0`. However, starting from 1.0.7, even if 
-    # you check validation multiples times within an epoch, you still need to set
-    # `checkpoint_period=1`.
     'checkpoint_period': 1} # default 1
 
 # delete all existing .ckpt files
-refresh_ckpt()
+# refresh_ckpt()
 
 # load split_df
 split_df = load_split_df(data_hparams['window_size'])
@@ -873,20 +899,16 @@ split_df = load_split_df(data_hparams['window_size'])
 np.random.seed(trainer_hparams['seed'])
 torch.manual_seed(trainer_hparams['seed'])
 
-for yqtr in split_df.yqtr:
 
-    # Only test after 2012-q4
-    if yqtr>='2012-q4':
+# update current period
+data_hparams.update({'yqtr': args.yqtr})
 
-        # update current period
-        data_hparams.update({'yqtr': yqtr})
-
-        # train on select periods
-        train_one(Model, yqtr, data_hparams, model_hparams, trainer_hparams)
+# train on select periods
+train_one(Model, args.yqtr, data_hparams, model_hparams, trainer_hparams)
         
 '''
 
-# + [markdown] toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true
+# + [markdown] toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true
 # # RNN
 # -
 
@@ -987,7 +1009,7 @@ class CCGRU(CC):
         # logging
         return {'test_loss': loss_car}  
 
-# + [markdown] toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true
+# + [markdown] toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true
 # # STL
 # -
 
@@ -1300,7 +1322,7 @@ for yqtr in split_df.yqtr:
 # ## CCMTLFr
 
 # MLP
-class CCMTLFr(CCMTL):
+class CCMTLFr(CC):
     def __init__(self, learning_rate, dropout, alpha, model_type='MTL'):
         super().__init__(learning_rate)
         
@@ -1311,11 +1333,93 @@ class CCMTLFr(CCMTL):
         # self.dropout_2 = nn.Dropout(self.hparams.dropout)
         
         # fc layers
-        self.fc_1 = nn.Linear(15, 16)
+        self.fc_1 = nn.Linear(17, 32)
         # self.fc_2 = nn.Linear(16, 16)
-        self.fc_car = nn.Linear(16, 1)
-        self.fc_rev = nn.Linear(16, 1)
-        self.fc_inf = nn.Linear(16, 1)
+        self.fc_car = nn.Linear(32, 1)
+        self.fc_rev = nn.Linear(32, 1)
+        self.fc_inf = nn.Linear(32, 1)
+        self.fc_ret = nn.Linear(32, 1)
+        
+    def forward(self, batch):
+        transcriptid, y_car, y_rev, y_inf, y_ret, \
+        t_car, t_rev, t_inf, t_ret = self.shared_step(batch)
+        
+        return {'transcriptid': transcriptid,
+                'y_car': y_car, 'y_rev': y_rev, 'y_inf': y_inf, 'y_ret': y_ret,
+                't_car': t_car, 't_rev': t_rev, 't_inf': t_inf, 't_ret': t_ret}
+    
+    def shared_step(self, batch):
+        transcriptid, t_car, t_inf, t_rev, t_ret, \
+        manual_txt, fin_ratios = batch
+        
+        x = torch.cat([fin_ratios, manual_txt], dim=-1) # (N, 2+15)
+        # x = fin_ratios
+        
+        x = self.dropout_1(F.relu(self.fc_1(x)))
+        # x = self.dropout_2(F.relu(self.fc_2(x)))
+        y_car = self.fc_car(x) # (N, 1)    
+        y_rev = self.fc_rev(x) # (N, 1)
+        y_inf = self.fc_inf(x) # (N, 1)
+        y_ret = self.fc_ret(x) # (N, 1)
+        
+        # regularize dimension
+        y_car = y_car.squeeze(-1)
+        y_rev = y_rev.squeeze(-1)
+        y_inf = y_inf.squeeze(-1)
+        y_ret = y_ret.squeeze(-1)
+        
+        return transcriptid, y_car, y_rev, y_inf, y_ret, \
+               t_car, t_rev, t_inf, t_ret 
+        
+    # train step
+    def training_step(self, batch, idx):
+        transcriptid, y_car, y_rev, y_inf, y_ret, \
+        t_car, t_rev, t_inf, t_ret = self.shared_step(batch)
+        
+        loss_car = self.mse_loss(y_car, t_car)
+        loss_rev = self.mse_loss(y_rev, t_rev)
+        loss_inf = self.mse_loss(y_inf, t_inf)
+        loss_ret = self.mse_loss(y_ret, t_ret)
+        
+        loss = loss_car + self.hparams.alpha*(loss_rev + loss_inf + loss_ret)/3
+        self.log('train_loss', loss)
+        
+        return loss
+    
+    # validation step
+    def validation_step(self, batch, idx):
+        transcriptid, y_car, y_rev, y_inf, y_ret, \
+        t_car, t_rev, t_inf, t_ret = self.shared_step(batch)
+        
+        loss_car = self.mse_loss(y_car, t_car)
+        loss_rev = self.mse_loss(y_rev, t_rev)
+        loss_inf = self.mse_loss(y_inf, t_inf)
+        loss_ret = self.mse_loss(y_ret, t_ret)
+        
+        loss = loss_car + self.hparams.alpha*(loss_rev + loss_inf + loss_ret)/3
+        
+        self.log('val_loss', loss)
+
+
+# ## CCMTLFrTxt
+
+# MLP
+class CCMTLFrTxt(CC):
+    def __init__(self, learning_rate, dropout, alpha, model_type='MTL'):
+        super().__init__(learning_rate)
+        
+        self.save_hyperparameters()
+        
+        # dropout layers
+        self.dropout_1 = nn.Dropout(self.hparams.dropout)
+        # self.dropout_2 = nn.Dropout(self.hparams.dropout)
+        
+        # fc layers
+        self.fc_1 = nn.Linear(17, 32)
+        # self.fc_2 = nn.Linear(16, 16)
+        self.fc_car = nn.Linear(32, 1)
+        self.fc_rev = nn.Linear(32, 1)
+        self.fc_inf = nn.Linear(32, 1)
         
     def forward(self, batch):
         transcriptid, y_car, y_rev, y_inf, \
@@ -1329,12 +1433,16 @@ class CCMTLFr(CCMTL):
         transcriptid, car, car_stand, inflow, inflow_stand, \
         revision, revision_stand, manual_txt, fin_ratios = batch
         
+        car, car_stand, inflow, inflow_stand, revision, revision_stand, \
+        transcriptid, embeddings, src_key_padding_mask, \
+        fin_ratios = batch
+        
         t_car = car_stand
         t_rev = revision_stand
         t_inf = inflow_stand
 
-        # x = torch.cat([fin_ratios, manual_txt], dim=-1) # (N, 2+15)
-        x = fin_ratios
+        x = torch.cat([fin_ratios, manual_txt], dim=-1) # (N, 2+15)
+        # x = fin_ratios
         
         x = self.dropout_1(F.relu(self.fc_1(x)))
         # x = self.dropout_2(F.relu(self.fc_2(x)))
@@ -1342,8 +1450,13 @@ class CCMTLFr(CCMTL):
         y_rev = self.fc_rev(x) # (N, 1)
         y_inf = self.fc_inf(x) # (N, 1)
         
-        return transcriptid, y_car.squeeze(), y_rev.squeeze(), \
-               y_inf.squeeze(), t_car, t_rev, t_inf 
+        # regularize dimension
+        y_car = y_car.squeeze(-1)
+        y_rev = y_rev.squeeze(-1)
+        y_inf = y_inf.squeeze(-1)
+        
+        return transcriptid, y_car, y_rev, y_inf, \
+               t_car, t_rev, t_inf 
         
     # train step
     def training_step(self, batch, idx):
@@ -1382,6 +1495,7 @@ class CCMTLFr(CCMTL):
 parser = argparse.ArgumentParser(description='Earnings Call')
 parser.add_argument('--yqtr', type=str, required=True)
 parser.add_argument('--window_size', type=str, required=True)
+parser.add_argument('--note', type=str, required=True)
 
 args = parser.parse_args()
 yqtr = args.yqtr
@@ -1392,9 +1506,9 @@ Model = CCMTLFr
 
 # data hparams
 data_hparams = {
-    'targets_name': 'targets_final', # key!
+    'targets_name': 'targets_final_addretail', # key!
 
-    'batch_size': 64,
+    'batch_size': 256,
     'val_batch_size':64,
     'test_batch_size':64,
     
@@ -1405,7 +1519,7 @@ data_hparams = {
 # model hparams
 model_hparams = {
     'alpha': 0.1, # key!
-    'learning_rate': 1e-4,
+    'learning_rate': 1e-3,
     'dropout': 0.1, # default: 0.5
 }
 
@@ -1418,10 +1532,8 @@ trainer_hparams = {
     'gpus': [0,1], # key
 
     # checkpoint & log
-    
-    # last: MLP-24
     'machine': 'yu-workstation', # key!
-    'note': f"MTL-test3", # key!
+    'note': args.note, 
     'log_every_n_steps': 50,
     'save_top_k': 1,
     'val_check_interval': 1.0,
@@ -1431,24 +1543,16 @@ trainer_hparams = {
     'overfit_batches': 0.0,
     'min_epochs': 10, # default: 10
     'max_epochs': 500, # default: 20. Must be larger enough to have at least one "val_rmse is not in the top 1"
-    'max_steps': None, # default None
+    'max_steps': None, 
     'accumulate_grad_batches': 1,
 
     # Caution:
     # The check of patience depends on **how often you compute your val_loss** (`val_check_interval`). 
     # Say you check val every N baches, then `early_stop_callback` will compare to your latest N **baches**.
     # If you compute val_loss every N **epoches**, then `early_stop_callback` will compare to the latest N **epochs**.
-    'early_stop_patience': 10, # default: 3
+    'early_stop_patience': 25, # default: 10
 
-    # Caution:
-    # In pervious versions, if you check validatoin multiple times within a epoch,
-    # you have to set `check_point_period=0`. However, starting from 1.0.7, even if 
-    # you check validation multiples times within an epoch, you still need to set
-    # `checkpoint_period=1`.
-    'checkpoint_period': 1} # default 1
-
-# delete all existing .ckpt files
-refresh_ckpt()
+    'checkpoint_period': 1}
 
 # load split_df
 split_df = load_split_df(data_hparams['window_size'])
@@ -1719,3 +1823,5 @@ yt_extractor = dt.rbind(yt_extractor)
 
 # sv('all_yt_extractor', 'yt_extractor')
 '''
+
+# # Temp
