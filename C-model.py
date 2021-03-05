@@ -8,7 +8,7 @@
 #       format_version: '1.5'
 #       jupytext_version: 1.9.1
 #   kernelspec:
-#     display_name: Python 3
+#     display_name: Python-3.8
 #     language: python
 #     name: python3
 # ---
@@ -148,40 +148,11 @@ def load_targets(targets_name, force=False):
     # targets_df = targets_df[targets_df.outlier_flag1==False]
     return targets_df
         
-# helpers: load preembeddings
-def load_preembeddings(preembedding_name):
-    if 'preembeddings' not in globals():
-        
-        # find the embedding files
-        emb_paths = [path for path in os.listdir('data/Embeddings')
-                     if re.search(f'{preembedding_name}_rank', path)]
-        emb_paths.sort()
-        assert len(emb_paths)==2, "Expect two files: rank0 and rank1"
-
-        # load the embedding files
-        print(f'{datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")}, Loading "{emb_paths[0]}"...')
-        emb0 = torch.load(f"{DATA_DIR}/Embeddings/{emb_paths[0]}")
-        print(f'{datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")}, Loading "{emb_paths[1]}"...')
-        emb1 = torch.load(f"{DATA_DIR}/Embeddings/{emb_paths[1]}")
-
-        # merge two ranks into one (update emb0 with emb1)
-        for tid, cid_emb in emb1.items():
-            for cid, emb in cid_emb.items():
-                emb0[tid].update({cid:emb})
-        print('Merging completes!')
-
-        # write embedding to globals()
-        globals()['preembeddings'] = emb0
-    
-    else:
-        print(f'Pre-embedding "{preembedding_name}" already loaded, will not load again!')
-
 # helpers: load split_df
 def load_split_df(window_size):
     split_df = pd.read_csv(f'{DATA_DIR}/split_dates.csv')
     return split_df.loc[split_df.window_size==window_size]
 
-# helpers: load tid_cid_pair
 def load_tid_cid_pair(tid_cid_pair_name):
     '''load DataFrame tid_cid_pair, convert it into a Dict
     
@@ -190,12 +161,11 @@ def load_tid_cid_pair(tid_cid_pair_name):
     tid_cid_pair_name: str. e.g., "md", "qa", "all"
     '''
     pair = feather.read_feather(f'data/tid_cid_pair_{tid_cid_pair_name}.feather')
-    output = {}
-    for tid, group in pair.groupby(['transcriptid']):
-        cids = group.componentid.to_list()
-        output[tid] = cids
-    return output
+    tids = pair.transcriptid.tolist()
+    cids = [cid.tolist() for cid in pair.componentid]
     
+    return dict(zip(tids, cids))
+
 # helpers: load tid_cid_pair
 def load_tid_from_to_pair(tid_from_to_pair_name):
     '''load DataFrame tid_from_to_pair, convert it into a Dict
@@ -206,11 +176,11 @@ def load_tid_from_to_pair(tid_from_to_pair_name):
     '''
     pair = feather.read_feather(f'data/tid_from_to_pair_{tid_from_to_pair_name}.feather')
     
-    output = {}
-    for _, (_, tid_from, tid_to) in pair.iterrows():
-        output[tid_from] = tid_to.tolist()
-    return output
+    tid_from = pair.transcriptid_from
+    tid_to = [tid.tolist() for tid in pair.transcriptid_to]
     
+    return dict(zip(tid_from, tid_to))
+
 # helper: log_ols_rmse
 def log_ols_rmse(logger, yqtr, window_size):
     '''
@@ -247,7 +217,10 @@ def log_test_start(logger, window_size, yqtr):
 # Define Dataset
 class CCDataset(Dataset):
     
-    def __init__(self, yqtr, split_type, text_in_dataset, window_size, targets_df, split_df, tid_cid_pair=None, tid_from_to_pair=None, preembeddings=None):
+    def __init__(self, yqtr, split_type, text_in_dataset,
+                 window_size, targets_df, split_df, preemb_dir=None,
+                 tid_cid_pair1=None, tid_from_to_pair1=None,
+                 tid_cid_pair2=None, tid_from_to_pair2=None):
         '''
         Args:
             preembeddings: dict of pre-embeddings. In the form
@@ -270,7 +243,9 @@ class CCDataset(Dataset):
         '''
             
         # get split dates from `split_df`
-        train_start, train_end, test_start, test_end, _, yqtr = tuple(split_df.loc[(split_df.yqtr==yqtr) & (split_df.window_size==window_size)].iloc[0])
+        train_start, train_end, test_start, test_end, _, yqtr = \
+            tuple(split_df.loc[(split_df.yqtr==yqtr) & \
+                               (split_df.window_size==window_size)].iloc[0])
         
         train_start = datetime.strptime(train_start, '%Y-%m-%d').date()
         train_end = datetime.strptime(train_end, '%Y-%m-%d').date()
@@ -282,28 +257,39 @@ class CCDataset(Dataset):
             # print current window
             print(f'Current window: {yqtr} ({window_size}) \n(train: {train_start} to {train_end}) (test: {test_start} to {test_end})')
             
-            targets_df = targets_df[targets_df.ciq_call_date.between(train_start, train_end)].sample(frac=1, random_state=42)
+            targets_df = targets_df[targets_df.ciq_call_date\
+                                    .between(train_start, train_end)]\
+                                    .sample(frac=1, random_state=42)
             # targets_df = targets_df.iloc[:int(len(targets_df)*0.9)]
             
         elif split_type=='val':
-            targets_df = targets_df[targets_df.ciq_call_date.between(train_start, train_end)].sample(frac=1, random_state=42)
+            targets_df = targets_df[targets_df.ciq_call_date\
+                                    .between(train_start, train_end)]\
+                                    .sample(frac=1, random_state=42)
             targets_df = targets_df.iloc[int(len(targets_df)*0.9):]
 
         elif split_type=='test':
-            targets_df = targets_df[targets_df.ciq_call_date.between(test_start, test_end)]
+            targets_df = targets_df[targets_df.ciq_call_date
+                                    .between(test_start, test_end)]
 
         
         if text_in_dataset:
             # make sure targets_df only contains transcriptid that're also 
             # in preembeddings
-            targets_df = targets_df.loc[targets_df.transcriptid.isin(set(preembeddings.keys()))]
+            # tid_on_disk: valid tids save in "preemb_dir"
+            tid_on_disk = set(int(tid.split('.')[0]) 
+                              for tid in os.listdir(preemb_dir)
+                              if re.search('\d+\.pt', tid))
+            targets_df = targets_df.loc[targets_df.transcriptid.isin(tid_on_disk)]
             
-            self.tid_cid_pair = tid_cid_pair
-            self.tid_from_to_pair = tid_from_to_pair
-            self.preembeddings = preembeddings
-        
+            self.tid_cid_pair1 = tid_cid_pair1
+            self.tid_cid_pair2 = tid_cid_pair2
+            self.tid_from_to_pair1 = tid_from_to_pair1
+            self.tid_from_to_pair2 = tid_from_to_pair2
+            
         # Assign states
         self.text_in_dataset = text_in_dataset
+        self.preemb_dir = preemb_dir
 
         self.targets_df = targets_df
         self.train_start = train_start
@@ -350,14 +336,19 @@ class CCDataset(Dataset):
         volume = targets.volume_stand
 
         if self.text_in_dataset:
-            # inputs: preembeddings
-            embeddings = assemble_embedding(transcriptid, 
-                                            self.preembeddings,
-                                            self.tid_cid_pair,
-                                            self.tid_from_to_pair)
+            emb1, emb2 = None, None
+            
+            emb1 = assemble_embedding(transcriptid, self.preemb_dir,
+                                      self.tid_cid_pair1,
+                                      self.tid_from_to_pair1)
+            if self.tid_cid_pair2 != None:
+                emb2 = assemble_embedding(transcriptid, self.preemb_dir, 
+                                          self.tid_cid_pair2,
+                                          self.tid_from_to_pair2)
 
-            return car_stand, inflow_stand, revision_stand, retail_stand, \
-                   transcriptid, embeddings, \
+            return transcriptid, \
+                   car_stand, inflow_stand, revision_stand, retail_stand, \
+                   emb1, emb2, [similarity, sentiment], \
                    [alpha, car_m1_m1, car_m2_m2, car_m30_m3, sest, sue, numest,\
                     sstdest, smedest, mcap, roa, bm, debt_asset, volatility,\
                     volume]
@@ -375,7 +366,7 @@ class CCDataset(Dataset):
                                 dtype=torch.float32)
       
     
-def assemble_embedding(transcriptid, preembeddings, 
+def assemble_embedding(transcriptid, preemb_dir, 
                        tid_cid_pair, tid_from_to_pair):
     '''Assemble embeddings belonging to the same tid into one Tensor
     
@@ -392,47 +383,56 @@ def assemble_embedding(transcriptid, preembeddings,
     output = []
     
     for tid_to in tids_to:
-        comps = preembeddings[tid_to]
-        emb = [comps[cid]['embedding'] 
+        comps = torch.load(f'{preemb_dir}/{tid_to}.pt')
+        emb = [torch.as_tensor(comps[cid]['embedding']) 
                for cid in tid_cid_pair.get(tid_to, [])]
         output.extend(emb)
         
     return torch.stack(output)
 
 
-# -
-
+# +
 # then define DataModule
 class CCDataModule(pl.LightningDataModule):
-    def __init__(self, yqtr, targets_name, batch_size, val_batch_size,
+    def __init__(self, yqtr, targets_name, num_workers, batch_size, val_batch_size,
                  test_batch_size, text_in_dataset, window_size, 
-                 preembedding_name=None, tid_cid_pair_name=None,
-                 tid_from_to_pair_name=None):
+                 preemb_dir=None,
+                 tid_cid_pair_name1=None, tid_from_to_pair_name1=None,
+                 tid_cid_pair_name2=None, tid_from_to_pair_name2=None):
+        '''
+        preemb_dir: Directory of pre-embedding files, where every transcript is 
+            saved into a single file.
+        '''
         super().__init__()
         
         self.yqtr = yqtr
-        self.preembedding_name = preembedding_name
+        self.preemb_dir = preemb_dir
         self.targets_name = targets_name
+        self.num_workers = num_workers
         self.batch_size = batch_size
         self.val_batch_size = val_batch_size
         self.test_batch_size = test_batch_size
         self.text_in_dataset = text_in_dataset
         self.window_size = window_size
-        self.tid_cid_pair_name = tid_cid_pair_name
-        self.tid_from_to_pair_name = tid_from_to_pair_name
+        self.tid_cid_pair_name1 = tid_cid_pair_name1
+        self.tid_cid_pair_name2 = tid_cid_pair_name2
+        self.tid_from_to_pair_name1 = tid_from_to_pair_name1
+        self.tid_from_to_pair_name2 = tid_from_to_pair_name2
         
     # Dataset
     def setup(self):
         # read the preembedding, targests, and split_df
+        tid_cid_pair1, tid_cid_pair2 = None, None
+        tid_from_to_pair1, tid_from_to_pair2 = None, None
+            
         if self.text_in_dataset:
-            global preembeddings
-            load_preembeddings(self.preembedding_name)
-            tid_cid_pair = load_tid_cid_pair(self.tid_cid_pair_name)
-            tid_from_to_pair = load_tid_from_to_pair(self.tid_from_to_pair_name)
-        else:
-            preembeddings = None
-            tid_cid_pair = None
-            tid_from_to_pair = None
+            tid_cid_pair1 = load_tid_cid_pair(self.tid_cid_pair_name1)
+            tid_from_to_pair1 = load_tid_from_to_pair(self.tid_from_to_pair_name1)
+            
+            if self.tid_cid_pair_name2 != None:
+                tid_cid_pair2 = load_tid_cid_pair(self.tid_cid_pair_name2)
+                tid_from_to_pair2 = \
+                    load_tid_from_to_pair(self.tid_from_to_pair_name2)
             
         targets_df = load_targets(self.targets_name)
         split_df = load_split_df(self.window_size)
@@ -442,32 +442,38 @@ class CCDataModule(pl.LightningDataModule):
                                        split_type='train',
                                        text_in_dataset=self.text_in_dataset,
                                        window_size=self.window_size,
-                                       preembeddings=preembeddings,
                                        targets_df=targets_df, 
                                        split_df=split_df,
-                                       tid_cid_pair=tid_cid_pair,
-                                       tid_from_to_pair=tid_from_to_pair)
+                                       preemb_dir=self.preemb_dir,
+                                       tid_cid_pair1=tid_cid_pair1,
+                                       tid_cid_pair2=tid_cid_pair2,
+                                       tid_from_to_pair1=tid_from_to_pair1,
+                                       tid_from_to_pair2=tid_from_to_pair2)
         print(f'N train = {len(self.train_dataset)}')
         
         self.val_dataset = CCDataset(self.yqtr, split_type='val',
                                      text_in_dataset=self.text_in_dataset,
                                      window_size=self.window_size,
-                                     preembeddings=preembeddings,
                                      targets_df=targets_df,
                                      split_df=split_df,
-                                     tid_cid_pair=tid_cid_pair,
-                                     tid_from_to_pair=tid_from_to_pair)
+                                     preemb_dir=self.preemb_dir,
+                                     tid_cid_pair1=tid_cid_pair1,
+                                     tid_cid_pair2=tid_cid_pair2,
+                                     tid_from_to_pair1=tid_from_to_pair1,
+                                     tid_from_to_pair2=tid_from_to_pair2)
         print(f'N val = {len(self.val_dataset)}')
         print(f'N train+val = {len(self.train_dataset)+len(self.val_dataset)}')
 
         self.test_dataset = CCDataset(self.yqtr, split_type='test',
                                       text_in_dataset=self.text_in_dataset, 
                                       window_size=self.window_size,
-                                      preembeddings=preembeddings,
                                       targets_df=targets_df,
                                       split_df=split_df,
-                                      tid_cid_pair=tid_cid_pair,
-                                      tid_from_to_pair=tid_from_to_pair)
+                                      preemb_dir=self.preemb_dir,
+                                      tid_cid_pair1=tid_cid_pair1,
+                                      tid_cid_pair2=tid_cid_pair2,
+                                      tid_from_to_pair1=tid_from_to_pair1,
+                                      tid_from_to_pair2=tid_from_to_pair2)
         print(f'N test = {len(self.test_dataset)}')
 
     # DataLoader
@@ -477,7 +483,7 @@ class CCDataModule(pl.LightningDataModule):
 
         collate_fn = self.collate_fn if self.text_in_dataset else None
         return DataLoader(self.train_dataset, batch_size=self.batch_size, 
-                          shuffle=True, drop_last=False, num_workers=4,
+                          shuffle=True, drop_last=False, num_workers=self.num_workers,
                           pin_memory=True, collate_fn=collate_fn)
     
     def val_dataloader(self):
@@ -487,12 +493,12 @@ class CCDataModule(pl.LightningDataModule):
         
         collate_fn = self.collate_fn if self.text_in_dataset else None
         return DataLoader(self.val_dataset, batch_size=self.val_batch_size,
-                          num_workers=4, pin_memory=True, collate_fn=collate_fn,
+                          num_workers=self.num_workers, pin_memory=True, collate_fn=collate_fn,
                           drop_last=False)
 
     def test_dataloader(self):
         collate_fn = self.collate_fn if self.text_in_dataset else None
-        return DataLoader(self.test_dataset, batch_size=self.test_batch_size, num_workers=4, 
+        return DataLoader(self.test_dataset, batch_size=self.test_batch_size, num_workers=self.num_workers, 
                           pin_memory=True, collate_fn=collate_fn, drop_last=False)
     
     def collate_fn(self, data):
@@ -501,37 +507,46 @@ class CCDataModule(pl.LightningDataModule):
         Retures:
             embeddings: tensor, (N, S, E)
             mask: tensor, (N, S)
-            sue,car,selead,sest: tensor, (N,)
+            target variables: tensor, (N,)
         '''
         
         # embeddings: (N, S, E)
-        car_0_30, car_0_30_stand, inflow, inflow_stand, revision, revision_stand, \
-        transcriptid, embeddings, \
-        fin_ratios = zip(*data)
+        transcriptid, car, inflow, revision, retail, \
+        emb1, emb2, manual_text, fin_ratios = zip(*data)
         
         # pad sequence
         # the number of `padding_value` is irrelevant, since we'll 
         # apply a mask in the Transformer encoder, which will 
         # eliminate the padded positions.
-        valid_seq_len = [emb.shape[-2] for emb in embeddings]
-        embeddings = pad_sequence(embeddings, batch_first=True, padding_value=0) # (N, T, E)
+        emb1, mask1 = create_emb(emb1)
 
-        # mask: (N, T)
-        mask = torch.ones((embeddings.shape[0], embeddings.shape[1]))
-        for i, length in enumerate(valid_seq_len):
-            mask[i, :length] = 0
-        mask = mask == 1
+        mask2 = (None,)*len(emb2)
+        if sum([_!=None for _ in emb2])>0:
+            emb2, mask2 = create_emb(emb2)
         
-        return torch.tensor(car_0_30, dtype=torch.float32), \
-               torch.tensor(car_0_30_stand, dtype=torch.float32), \
+        return torch.tensor(transcriptid, dtype=torch.float32), \
+               torch.tensor(car, dtype=torch.float32), \
                torch.tensor(inflow, dtype=torch.float32), \
-               torch.tensor(inflow_stand, dtype=torch.float32), \
                torch.tensor(revision, dtype=torch.float32), \
-               torch.tensor(revision_stand, dtype=torch.float32), \
-               torch.tensor(transcriptid, dtype=torch.float32), \
-               embeddings.float(), mask, \
+               torch.tensor(retail, dtype=torch.float32),\
+               emb1, mask1, emb2, mask2, \
+               torch.tensor(manual_text, dtype=torch.float32),\
                torch.tensor(fin_ratios, dtype=torch.float32)
+    
+def create_emb(embeddings):
+    valid_seq_len = [emb.shape[-2] for emb in embeddings]
+    embeddings = pad_sequence(embeddings, batch_first=True, padding_value=0) # (N, T, E)
 
+    # mask: (N, T)
+    mask = torch.ones((embeddings.shape[0], embeddings.shape[1]))
+    for i, length in enumerate(valid_seq_len):
+        mask[i, :length] = 0
+    mask = mask == 1
+    
+    return embeddings.float(), mask
+
+
+# -
 
 # ## def Model
 
@@ -580,19 +595,25 @@ def test_with_ckpt(datamodule, logger):
     # save & log `y_car`
     ckpt_path = f"{CHECKPOINT_DIR}/{trainer_hparams['note']}_{data_hparams['yqtr']}*.ckpt"
     ckpt_path = glob.glob(ckpt_path)
-    assert len(ckpt_path)==1, f'Multiple checkpoints found: {ckpt_path}'
+    assert len(ckpt_path)==1, f'Expect only one checkpoint, but found: {ckpt_path}'
     ckpt_path = ckpt_path[0]
 
     # init model from checkpoint
+    device = 'cuda:1'
     model = Model.load_from_checkpoint(ckpt_path)
     model.eval()
+    model.to(device)
 
     transcriptids = []
     y_car, y_rev, y_inf, y_ret = [], [], [], []
     t_car, t_rev, t_inf, t_ret = [], [], [], []
 
+    print(f'Predicting test set...')
     with torch.no_grad():
         for batch in datamodule.test_dataloader():
+
+            batch = [t.to(device) for t in batch]
+
             res = model.forward(batch)
             
             transcriptids.extend(res['transcriptid'].tolist())
@@ -630,10 +651,12 @@ def test_with_ckpt(datamodule, logger):
     if len(t_ret)==len(t_car):
         df[:, update(t_ret=dt.Frame(t_ret))]
     
-    test_results = f'{DATA_DIR}/y_car.feather'
+    
+    test_results = f'y_car_{np.random.randint(1e5)}.feather'
     feather.write_feather(df.to_pandas(), test_results)
-
     logger.experiment.log_asset(test_results)
+    os.unlink(test_results)
+
     
     # upload rmse
     rmse = pl.metrics.functional.mean_squared_error(torch.Tensor(y_car),
@@ -1009,7 +1032,7 @@ class CCGRU(CC):
         # logging
         return {'test_loss': loss_car}  
 
-# + [markdown] toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true
+# + [markdown] toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true
 # # STL
 # -
 
@@ -1038,7 +1061,7 @@ class CCTransformerSTLTxt(CC):
         # self.attn_dropout_1 = nn.Dropout(self.hparams.attn_dropout)
         
         # Build Encoder and Decoder
-        self.encoder_expert = nn.TransformerEncoder(encoder_layers_expert, self.hparams.n_layers_encoder)
+        self.encoder = nn.TransformerEncoder(encoder_layers_expert, self.hparams.n_layers_encoder)
         
         # linear layer to produce final result
         self.fc_1 = nn.Linear(self.hparams.d_model, 1)
@@ -1064,7 +1087,7 @@ class CCTransformerSTLTxt(CC):
         x = self.encoder_pos(embeddings) # (S, N, E)
         
         # encode
-        x_expert = self.encoder_expert(x, src_key_padding_mask=src_key_padding_mask).transpose(0,1) # (N, S, E)
+        x_expert = self.encoder(x, src_key_padding_mask=src_key_padding_mask).transpose(0,1) # (N, S, E)
         
         # decode with attn
         # x_attn = self.attn_dropout_1(F.softmax(self.attn_layers_car(x_expert), dim=1)) # (N, S, 1)
@@ -1130,7 +1153,7 @@ class CCTransformerSTLTxtFr(CC):
         # self.attn_dropout_1 = nn.Dropout(self.hparams.attn_dropout)
         
         # Build Encoder and Decoder
-        self.encoder_expert = nn.TransformerEncoder(encoder_layers_expert, self.hparams.n_layers_encoder)
+        self.encoder = nn.TransformerEncoder(encoder_layers_expert, self.hparams.n_layers_encoder)
         
         # linear layer to produce final result
         # txt_mixer_layer = TxtMixerLayer(self.hparams.d_model)
@@ -1175,7 +1198,7 @@ class CCTransformerSTLTxtFr(CC):
         x = self.encoder_pos(embeddings) # (S, N, E)
         
         # encode
-        x_expert = self.encoder_expert(x, src_key_padding_mask=src_key_padding_mask).transpose(0,1) # (N, S, E)
+        x_expert = self.encoder(x, src_key_padding_mask=src_key_padding_mask).transpose(0,1) # (N, S, E)
         
         # decode with attn
         # x_attn = self.attn_dropout_1(F.softmax(self.attn_layers_car(x_expert), dim=1)) # (N, S, 1)
@@ -1381,7 +1404,7 @@ class CCMTLFr(CC):
         loss_inf = self.mse_loss(y_inf, t_inf)
         loss_ret = self.mse_loss(y_ret, t_ret)
         
-        loss = loss_car + self.hparams.alpha*(loss_rev + loss_inf + loss_ret)/3
+        loss = loss_car + self.hparams.alpha*(0.6*loss_rev + 0.23*loss_inf + 0.17*loss_ret)
         self.log('train_loss', loss)
         
         return loss
@@ -1396,100 +1419,12 @@ class CCMTLFr(CC):
         loss_inf = self.mse_loss(y_inf, t_inf)
         loss_ret = self.mse_loss(y_ret, t_ret)
         
-        loss = loss_car + self.hparams.alpha*(loss_rev + loss_inf + loss_ret)/3
+        loss = loss_car + self.hparams.alpha*(0.6*loss_rev + 0.23*loss_inf + 0.17*loss_ret)
         
         self.log('val_loss', loss)
 
 
-# ## CCMTLFrTxt
-
-# MLP
-class CCMTLFrTxt(CC):
-    def __init__(self, learning_rate, dropout, alpha, model_type='MTL'):
-        super().__init__(learning_rate)
-        
-        self.save_hyperparameters()
-        
-        # dropout layers
-        self.dropout_1 = nn.Dropout(self.hparams.dropout)
-        # self.dropout_2 = nn.Dropout(self.hparams.dropout)
-        
-        # fc layers
-        self.fc_1 = nn.Linear(17, 32)
-        # self.fc_2 = nn.Linear(16, 16)
-        self.fc_car = nn.Linear(32, 1)
-        self.fc_rev = nn.Linear(32, 1)
-        self.fc_inf = nn.Linear(32, 1)
-        
-    def forward(self, batch):
-        transcriptid, y_car, y_rev, y_inf, \
-        t_car, t_rev, t_inf = self.shared_step(batch)
-        
-        return {'transcriptid': transcriptid,
-                'y_car': y_car, 'y_rev': y_rev, 'y_inf': y_inf,
-                't_car': t_car, 't_rev': t_rev, 't_inf': t_inf}
-    
-    def shared_step(self, batch):
-        transcriptid, car, car_stand, inflow, inflow_stand, \
-        revision, revision_stand, manual_txt, fin_ratios = batch
-        
-        car, car_stand, inflow, inflow_stand, revision, revision_stand, \
-        transcriptid, embeddings, src_key_padding_mask, \
-        fin_ratios = batch
-        
-        t_car = car_stand
-        t_rev = revision_stand
-        t_inf = inflow_stand
-
-        x = torch.cat([fin_ratios, manual_txt], dim=-1) # (N, 2+15)
-        # x = fin_ratios
-        
-        x = self.dropout_1(F.relu(self.fc_1(x)))
-        # x = self.dropout_2(F.relu(self.fc_2(x)))
-        y_car = self.fc_car(x) # (N, 1)    
-        y_rev = self.fc_rev(x) # (N, 1)
-        y_inf = self.fc_inf(x) # (N, 1)
-        
-        # regularize dimension
-        y_car = y_car.squeeze(-1)
-        y_rev = y_rev.squeeze(-1)
-        y_inf = y_inf.squeeze(-1)
-        
-        return transcriptid, y_car, y_rev, y_inf, \
-               t_car, t_rev, t_inf 
-        
-    # train step
-    def training_step(self, batch, idx):
-        transcriptid, y_car, y_rev, y_inf, \
-        t_car, t_rev, t_inf = self.shared_step(batch)
-        
-        loss_car = self.mse_loss(y_car, t_car)
-        loss_rev = self.mse_loss(y_rev, t_rev)
-        loss_inf = self.mse_loss(y_inf, t_inf)
-        
-        loss = loss_car + self.hparams.alpha*(loss_rev + loss_inf)/2
-        self.log('train_loss', loss)
-        
-        return loss
-    
-    # validation step
-    def validation_step(self, batch, idx):
-        transcriptid, y_car, y_rev, y_inf, \
-        t_car, t_rev, t_inf = self.shared_step(batch)
-        
-        loss_car = self.mse_loss(y_car, t_car)
-        loss_rev = self.mse_loss(y_rev, t_rev)
-        loss_inf = self.mse_loss(y_inf, t_inf)
-        
-        loss = loss_car + self.hparams.alpha*(loss_rev + loss_inf)/2
-        
-        self.log('val_loss', loss)
-
-
-# ## run
-
-# +
-# '''
+'''
 
 # parse arg
 parser = argparse.ArgumentParser(description='Earnings Call')
@@ -1508,6 +1443,7 @@ Model = CCMTLFr
 data_hparams = {
     'targets_name': 'targets_final_addretail', # key!
 
+    'num_workers': 2,
     'batch_size': 256,
     'val_batch_size':64,
     'test_batch_size':64,
@@ -1542,7 +1478,7 @@ trainer_hparams = {
     'precision': 32, # key!
     'overfit_batches': 0.0,
     'min_epochs': 10, # default: 10
-    'max_epochs': 500, # default: 20. Must be larger enough to have at least one "val_rmse is not in the top 1"
+    'max_epochs': 300, # default: 20. Must be larger enough to have at least one "val_rmse is not in the top 1"
     'max_steps': None, 
     'accumulate_grad_batches': 1,
 
@@ -1551,6 +1487,244 @@ trainer_hparams = {
     # Say you check val every N baches, then `early_stop_callback` will compare to your latest N **baches**.
     # If you compute val_loss every N **epoches**, then `early_stop_callback` will compare to the latest N **epochs**.
     'early_stop_patience': 25, # default: 10
+
+    'checkpoint_period': 1}
+
+# load split_df
+split_df = load_split_df(data_hparams['window_size'])
+    
+# loop over windows
+np.random.seed(trainer_hparams['seed'])
+torch.manual_seed(trainer_hparams['seed'])
+
+print(f'Start training...{trainer_hparams["note"]}')
+
+
+# train on select periods
+data_hparams.update({'yqtr': yqtr})
+
+train_one(Model, yqtr, data_hparams, model_hparams, trainer_hparams)
+'''
+
+
+# ## CCMTLFrTxt
+
+# MLP
+class CCMTLFrTxt(CC):
+    def __init__(self, learning_rate, d_model, max_seq_len, dropout, alpha, 
+                 n_head_encoder, n_layers_encoder, dff, model_type='MTLTxt'):
+        super().__init__(learning_rate)
+        
+        self.save_hyperparameters()
+        
+        # positional encoding
+        self.encoder_pos = PositionalEncoding(self.hparams.d_model)
+        
+        # Build Encoder
+        encoder_layer = nn.TransformerEncoderLayer(self.hparams.d_model,
+                                                   self.hparams.n_head_encoder,
+                                                   self.hparams.dff)
+        
+        # atten layers for CAR
+        # self.attn_layers_car = nn.Linear(self.hparams.d_model, 1)
+        # self.attn_dropout_1 = nn.Dropout(self.hparams.attn_dropout)
+        
+        self.encoder = nn.TransformerEncoder(encoder_layer, self.hparams.n_layers_encoder)
+        
+
+        # Dropout layers
+        self.dropout_1 = nn.Dropout(self.hparams.dropout)
+        self.dropout_2 = nn.Dropout(self.hparams.dropout)
+        
+        # FC layers
+        self.fc_1 = nn.Linear(768, 4)
+        self.fc_2 = nn.Linear(21, 32)
+        self.fc_car = nn.Linear(32, 1)
+        self.fc_inf = nn.Linear(32, 1)
+        self.fc_rev = nn.Linear(32, 1)
+        self.fc_ret = nn.Linear(32, 1)
+        
+    def forward(self, batch):
+        transcriptid, \
+        y_car, y_inf, y_rev, y_ret, \
+        t_car, t_inf, t_rev, t_ret = self.shared_step(batch)
+        
+        return {'transcriptid': transcriptid,
+                'y_car': y_car, 'y_inf': y_inf, 'y_rev': y_rev, 'y_ret': y_ret,
+                't_car': t_car, 't_inf': t_inf, 't_rev': t_rev, 't_ret': t_ret}
+    
+    
+    def shared_step(self, batch):
+        # embeddings: list
+        transcriptid, t_car, t_inf, t_rev, t_ret,\
+        emb_ana, mask_ana, emb_man, mask_man, \
+        manual_text, fin_ratios = batch
+        
+        # if S is longer than max_seq_len, cut
+        emb_ana = emb_ana[:,:self.hparams.max_seq_len,] # (N, S, E)
+        emb_man = emb_man[:,:self.hparams.max_seq_len,] # (N, S, E)
+        mask_ana = mask_ana[:,:self.hparams.max_seq_len] # (N, S)
+        mask_man = mask_man[:,:self.hparams.max_seq_len] # (N, S)
+        
+        emb_ana = emb_ana.transpose(0, 1) # (S, N, E)
+        emb_man = emb_man.transpose(0, 1) # (S, N, E)
+        
+        # positional encoding
+        emb_ana = self.encoder_pos(emb_ana) # (S, N, E)
+        emb_man = self.encoder_pos(emb_man) # (S, N, E)
+        
+        # encode
+        x_ana = self.encoder(emb_ana, src_key_padding_mask=mask_ana)\
+            .transpose(0,1) # (N, S, E)
+        x_man = self.encoder(emb_man, src_key_padding_mask=mask_man)\
+            .transpose(0,1) # (N, S, E)
+        
+        # decode with attn
+        # x_attn = self.attn_dropout_1(F.softmax(self.attn_layers_car(x_expert), dim=1)) # (N, S, 1)
+        # x_expert = torch.bmm(x_expert.transpose(-1,-2), x_attn).squeeze(-1) # (N, E)
+        
+        # decode with avgpool
+        x_ana = x_ana.mean(1) # (N, E)
+        x_man = x_man.mean(1) # (N, E)
+        x_diff = x_ana-x_man  # (N, E)
+        
+        # x_text = torch.cat([x_ana, x_man, x_diff], dim=1)
+        x_text = x_diff
+        
+        # decode with maxpool
+        # x_expert_maxpool = x_expert.max(1)[0] # (N, E)
+        
+        # Reduce dimension of text features
+        x_text = self.dropout_1(F.relu(self.fc_1(x_text))) # (N, 16)
+        
+        x_fr = torch.cat([fin_ratios, manual_text], dim=-1) # (N, 2+15)
+
+        # concat: text + fr
+        x = torch.cat([x_text, x_fr], dim=-1) # (N, 16+17)
+        
+        x = self.dropout_2(F.relu(self.fc_2(x)))
+        y_car = self.fc_car(x) # (N, 1)    
+        y_inf = self.fc_inf(x) # (N, 1)
+        y_rev = self.fc_rev(x) # (N, 1)
+        y_ret = self.fc_ret(x) # (N, 1)
+        
+        # regularize dimension
+        y_car = y_car.squeeze(-1)
+        y_inf = y_inf.squeeze(-1)
+        y_rev = y_rev.squeeze(-1)
+        y_ret = y_ret.squeeze(-1)
+        
+        return transcriptid, \
+               y_car, y_inf, y_rev, y_ret, \
+               t_car, t_inf, t_rev, t_ret
+        
+    # train step
+    def training_step(self, batch, idx):
+        transcriptid, \
+        y_car, y_inf, y_rev, y_ret, \
+        t_car, t_inf, t_rev, t_ret = self.shared_step(batch)
+        
+        loss_car = self.mse_loss(y_car, t_car)
+        loss_inf = self.mse_loss(y_inf, t_inf)
+        loss_rev = self.mse_loss(y_rev, t_rev)
+        loss_ret = self.mse_loss(y_ret, t_ret)
+        
+        loss = loss_car + self.hparams.alpha*(0.67*loss_rev+0.23*loss_inf+0.17*loss_ret)/3
+        self.log('train_loss', loss)
+        
+        return loss
+    
+    # validation step
+    def validation_step(self, batch, idx):
+        transcriptid, \
+        y_car, y_inf, y_rev, y_ret, \
+        t_car, t_inf, t_rev, t_ret = self.shared_step(batch)
+        
+        loss_car = self.mse_loss(y_car, t_car)
+        loss_inf = self.mse_loss(y_inf, t_inf)
+        loss_rev = self.mse_loss(y_rev, t_rev)
+        loss_ret = self.mse_loss(y_ret, t_ret)
+        
+        loss = loss_car + self.hparams.alpha*(0.67*loss_rev+0.23*loss_inf+0.17*loss_ret)/3
+        
+        self.log('val_loss', loss)
+
+# +
+# '''
+
+# parse arg
+parser = argparse.ArgumentParser(description='Earnings Call')
+parser.add_argument('--yqtr', type=str, required=True)
+parser.add_argument('--window_size', type=str, required=True)
+parser.add_argument('--note', type=str, required=True)
+
+args = parser.parse_args()
+yqtr = args.yqtr
+window_size = args.window_size
+
+# choose Model
+Model = CCMTLFrTxt
+
+# data hparams
+data_hparams = {
+    'targets_name': 'targets_final_addretail', # key!
+
+    'num_workers': 4,
+    'batch_size': 32,
+    'val_batch_size': 32,
+    'test_batch_size': 32,
+    
+    'text_in_dataset': True,
+    'window_size': window_size,
+    
+    'preemb_dir': '/home/yu/OneDrive/CC/data/Embeddings/longformer',
+    'tid_cid_pair_name1': 'qa_analyst',
+    'tid_cid_pair_name2': 'qa_manager',
+    'tid_from_to_pair_name1': '1qtr',
+    'tid_from_to_pair_name2': '1qtr'
+}
+
+# model hparams
+model_hparams = {
+    'alpha': 0.1, # key!
+    'learning_rate': 3e-4,
+    'dropout': 0.1,
+    'd_model': 768,
+
+    'n_layers_encoder': 1,
+    'n_head_encoder': 8,
+    'max_seq_len': 1024,
+    'dff': 2048
+}
+
+# train hparams
+trainer_hparams = {
+    # random seed
+    'seed': 42,    # key
+    
+    # gpus
+    'gpus': [0,1], # key
+
+    # checkpoint & log
+    'machine': 'yu-workstation', # key!
+    'note': args.note, 
+    'log_every_n_steps': 50,
+    'save_top_k': 1,
+    'val_check_interval': 0.2,
+
+    # data size
+    'precision': 32, # key!
+    'overfit_batches': 0.0,
+    'min_epochs': 1, # default: 10
+    'max_epochs': 20, # default: 20. Must be larger enough to have at least one "val_rmse is not in the top 1"
+    'max_steps': None, 
+    'accumulate_grad_batches': 1,
+
+    # Caution:
+    # The check of patience depends on **how often you compute your val_loss** (`val_check_interval`). 
+    # Say you check val every N baches, then `early_stop_callback` will compare to your latest N **baches**.
+    # If you compute val_loss every N **epoches**, then `early_stop_callback` will compare to the latest N **epochs**.
+    'early_stop_patience': 6, 
 
     'checkpoint_period': 1}
 
