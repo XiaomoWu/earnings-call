@@ -167,14 +167,14 @@ def load_tid_cid_pair(tid_cid_pair_name):
     return dict(zip(tids, cids))
 
 # helpers: load tid_cid_pair
-def load_tid_from_to_pair(tid_from_to_pair_name):
+def load_tid_from_to_pair():
     '''load DataFrame tid_from_to_pair, convert it into a Dict
     
     output: {tid_from:[tid_to1, tid_to2, ...]}
     
     tid_cid_pair_name: str. e.g., "3qtr"
     '''
-    pair = feather.read_feather(f'data/tid_from_to_pair_{tid_from_to_pair_name}.feather')
+    pair = feather.read_feather(f'data/tid_from_to_pair.feather')
     
     tid_from = pair.transcriptid_from
     tid_to = [tid.tolist() for tid in pair.transcriptid_to]
@@ -219,16 +219,9 @@ class CCDataset(Dataset):
     
     def __init__(self, yqtr, split_type, text_in_dataset,
                  window_size, targets_df, split_df, preemb_dir=None,
-                 tid_cid_pair1=None, tid_from_to_pair1=None,
-                 tid_cid_pair2=None, tid_from_to_pair2=None):
+                 tid_cid_pair1=None, tid_cid_pair2=None, tid_from_to_pair_nqtr=None):
         '''
         Args:
-            preembeddings: dict of pre-embeddings. In the form
-              `{tid:{cid:{'embedding':Tensor, other-key-value-pair}}}` 
-              for component level and 
-              `{tid:{sid:{'embedding':Tensor, other-key-value-pair}}}` 
-              for sentence level.
-              
             targets_df: DataFrame of targets variables.
             split_df: DataFrame that keeps the split of windows
             ytqr: str. e.g., "2008-q3"
@@ -236,10 +229,14 @@ class CCDataset(Dataset):
             text_in_dataset: also output text embedding if true.
             
             tid_cid_pair: Dict of transcriptid and componentid/sentenceid for
-              text that will be used. In the form 
-              `{tid:[cid1, cid2, ...]}` or `{tid:[sid1, sid2, ...]}`
-              Note! [cid1, cid2, ...] must be in the same order as in original 
-              transcript!
+                text that will be used. In the form 
+                `{tid:[cid1, cid2, ...]}` or `{tid:[sid1, sid2, ...]}`
+                Note! [cid1, cid2, ...] must be in the same order as in original 
+                transcript!
+              
+            tid_cid_from_to_pair_nqtr: Int. The number of quarters that will
+                be used as inputs. E.g., "2" means the current and the previous 
+                quarters will be used.
         '''
             
         # get split dates from `split_df`
@@ -255,7 +252,7 @@ class CCDataset(Dataset):
         # generate targets_df for train, val, test 
         if split_type=='train':
             # print current window
-            print(f'Current window: {yqtr} ({window_size}) \n(train: {train_start} to {train_end}) (test: {test_start} to {test_end})')
+            # print(f'Current window: {yqtr} ({window_size}) \n(train: {train_start} to {train_end}) (test: {test_start} to {test_end})')
             
             targets_df = targets_df[targets_df.ciq_call_date\
                                     .between(train_start, train_end)]\
@@ -284,8 +281,8 @@ class CCDataset(Dataset):
             
             self.tid_cid_pair1 = tid_cid_pair1
             self.tid_cid_pair2 = tid_cid_pair2
-            self.tid_from_to_pair1 = tid_from_to_pair1
-            self.tid_from_to_pair2 = tid_from_to_pair2
+            self.tid_from_to_pair = load_tid_from_to_pair()
+            self.tid_from_to_pair_nqtr = tid_from_to_pair_nqtr
             
         # Assign states
         self.text_in_dataset = text_in_dataset
@@ -337,18 +334,23 @@ class CCDataset(Dataset):
 
         if self.text_in_dataset:
             emb1, emb2 = None, None
+            qtr_token1, qtr_token2 = None, None
             
-            emb1 = assemble_embedding(transcriptid, self.preemb_dir,
-                                      self.tid_cid_pair1,
-                                      self.tid_from_to_pair1)
+            # emb: (T,E)
+            # qtr_token: (T,). E.g., [0,0,0,0,1,1,1,1] (two quarters)
+            emb1, qtr_token1 = assemble_embedding(transcriptid, self.preemb_dir,
+                                                  self.tid_cid_pair1,
+                                                  self.tid_from_to_pair,
+                                                  self.tid_from_to_pair_nqtr)
             if self.tid_cid_pair2 != None:
-                emb2 = assemble_embedding(transcriptid, self.preemb_dir, 
-                                          self.tid_cid_pair2,
-                                          self.tid_from_to_pair2)
+                emb2, qtr_token2 = assemble_embedding(transcriptid, self.preemb_dir, 
+                                                      self.tid_cid_pair2,
+                                                      self.tid_from_to_pair,
+                                                      self.tid_from_to_pair_nqtr)
 
             return transcriptid, \
                    car_stand, inflow_stand, revision_stand, retail_stand, \
-                   emb1, emb2, [similarity, sentiment], \
+                   emb1, qtr_token1, emb2, qtr_token2, [similarity, sentiment], \
                    [alpha, car_m1_m1, car_m2_m2, car_m30_m3, sest, sue, numest,\
                     sstdest, smedest, mcap, roa, bm, debt_asset, volatility,\
                     volume]
@@ -367,7 +369,7 @@ class CCDataset(Dataset):
       
     
 def assemble_embedding(transcriptid, preemb_dir, 
-                       tid_cid_pair, tid_from_to_pair):
+                       tid_cid_pair, tid_from_to_pair, tid_from_to_pair_nqtr):
     '''Assemble embeddings belonging to the same tid into one Tensor
     
     Method:
@@ -377,18 +379,24 @@ def assemble_embedding(transcriptid, preemb_dir,
            "tid_cid_pair"
     '''
     # find tids that we'll consider
-    tids_to = tid_from_to_pair[transcriptid]
+    tids_to = tid_from_to_pair[transcriptid][:tid_from_to_pair_nqtr]
     
     # for every tid, merge its components
-    output = []
+    embs = []
+    qtr_tokens = []
     
-    for tid_to in tids_to:
+    for qtr, tid_to in enumerate(tids_to):
+        # qtr: could be 0~8, where 0 is for position filling.
+        # qtr: 1-current quarter; 2-previous quarter,...
+        qtr += 1
         comps = torch.load(f'{preemb_dir}/{tid_to}.pt')
         emb = [torch.as_tensor(comps[cid]['embedding']) 
                for cid in tid_cid_pair.get(tid_to, [])]
-        output.extend(emb)
+        qtr_token = [qtr]*len(emb) 
+        embs.extend(emb)
+        qtr_tokens.extend(qtr_token)
         
-    return torch.stack(output)
+    return torch.stack(embs), torch.tensor(qtr_tokens,dtype=torch.float32)
 
 
 # +
@@ -397,8 +405,8 @@ class CCDataModule(pl.LightningDataModule):
     def __init__(self, yqtr, targets_name, num_workers, batch_size, val_batch_size,
                  test_batch_size, text_in_dataset, window_size, 
                  preemb_dir=None,
-                 tid_cid_pair_name1=None, tid_from_to_pair_name1=None,
-                 tid_cid_pair_name2=None, tid_from_to_pair_name2=None):
+                 tid_cid_pair_name1=None, tid_cid_pair_name2=None, 
+                 tid_from_to_pair_nqtr=None):
         '''
         preemb_dir: Directory of pre-embedding files, where every transcript is 
             saved into a single file.
@@ -416,23 +424,19 @@ class CCDataModule(pl.LightningDataModule):
         self.window_size = window_size
         self.tid_cid_pair_name1 = tid_cid_pair_name1
         self.tid_cid_pair_name2 = tid_cid_pair_name2
-        self.tid_from_to_pair_name1 = tid_from_to_pair_name1
-        self.tid_from_to_pair_name2 = tid_from_to_pair_name2
+        self.tid_from_to_pair_nqtr = tid_from_to_pair_nqtr
         
     # Dataset
     def setup(self):
         # read the preembedding, targests, and split_df
         tid_cid_pair1, tid_cid_pair2 = None, None
-        tid_from_to_pair1, tid_from_to_pair2 = None, None
+        tid_from_to_pair = None
             
         if self.text_in_dataset:
             tid_cid_pair1 = load_tid_cid_pair(self.tid_cid_pair_name1)
-            tid_from_to_pair1 = load_tid_from_to_pair(self.tid_from_to_pair_name1)
             
             if self.tid_cid_pair_name2 != None:
                 tid_cid_pair2 = load_tid_cid_pair(self.tid_cid_pair_name2)
-                tid_from_to_pair2 = \
-                    load_tid_from_to_pair(self.tid_from_to_pair_name2)
             
         targets_df = load_targets(self.targets_name)
         split_df = load_split_df(self.window_size)
@@ -447,9 +451,8 @@ class CCDataModule(pl.LightningDataModule):
                                        preemb_dir=self.preemb_dir,
                                        tid_cid_pair1=tid_cid_pair1,
                                        tid_cid_pair2=tid_cid_pair2,
-                                       tid_from_to_pair1=tid_from_to_pair1,
-                                       tid_from_to_pair2=tid_from_to_pair2)
-        print(f'N train = {len(self.train_dataset)}')
+                                       tid_from_to_pair_nqtr=self.tid_from_to_pair_nqtr)
+        # print(f'N train = {len(self.train_dataset)}')
         
         self.val_dataset = CCDataset(self.yqtr, split_type='val',
                                      text_in_dataset=self.text_in_dataset,
@@ -459,10 +462,9 @@ class CCDataModule(pl.LightningDataModule):
                                      preemb_dir=self.preemb_dir,
                                      tid_cid_pair1=tid_cid_pair1,
                                      tid_cid_pair2=tid_cid_pair2,
-                                     tid_from_to_pair1=tid_from_to_pair1,
-                                     tid_from_to_pair2=tid_from_to_pair2)
-        print(f'N val = {len(self.val_dataset)}')
-        print(f'N train+val = {len(self.train_dataset)+len(self.val_dataset)}')
+                                       tid_from_to_pair_nqtr=self.tid_from_to_pair_nqtr)
+        # print(f'N val = {len(self.val_dataset)}')
+        # print(f'N train+val = {len(self.train_dataset)+len(self.val_dataset)}')
 
         self.test_dataset = CCDataset(self.yqtr, split_type='test',
                                       text_in_dataset=self.text_in_dataset, 
@@ -472,9 +474,8 @@ class CCDataModule(pl.LightningDataModule):
                                       preemb_dir=self.preemb_dir,
                                       tid_cid_pair1=tid_cid_pair1,
                                       tid_cid_pair2=tid_cid_pair2,
-                                      tid_from_to_pair1=tid_from_to_pair1,
-                                      tid_from_to_pair2=tid_from_to_pair2)
-        print(f'N test = {len(self.test_dataset)}')
+                                       tid_from_to_pair_nqtr=self.tid_from_to_pair_nqtr)
+        # print(f'N test = {len(self.test_dataset)}')
 
     # DataLoader
     def train_dataloader(self):
@@ -512,38 +513,41 @@ class CCDataModule(pl.LightningDataModule):
         
         # embeddings: (N, S, E)
         transcriptid, car, inflow, revision, retail, \
-        emb1, emb2, manual_text, fin_ratios = zip(*data)
+        emb1, qtr_token1, emb2, qtr_token2, \
+        manual_text, fin_ratios = zip(*data)
         
         # pad sequence
         # the number of `padding_value` is irrelevant, since we'll 
         # apply a mask in the Transformer encoder, which will 
         # eliminate the padded positions.
-        emb1, mask1 = create_emb(emb1)
+        emb1, mask1, qtr_token1 = batch_emb(emb1, qtr_token1)
 
         mask2 = (None,)*len(emb2)
         if sum([_!=None for _ in emb2])>0:
-            emb2, mask2 = create_emb(emb2)
+            emb2, mask2, qtr_token2 = batch_emb(emb2, qtr_token2)
         
         return torch.tensor(transcriptid, dtype=torch.float32), \
                torch.tensor(car, dtype=torch.float32), \
                torch.tensor(inflow, dtype=torch.float32), \
                torch.tensor(revision, dtype=torch.float32), \
                torch.tensor(retail, dtype=torch.float32),\
-               emb1, mask1, emb2, mask2, \
+               emb1, mask1, qtr_token1, \
+               emb2, mask2, qtr_token2, \
                torch.tensor(manual_text, dtype=torch.float32),\
                torch.tensor(fin_ratios, dtype=torch.float32)
     
-def create_emb(embeddings):
+def batch_emb(embeddings, qtr_token):
     valid_seq_len = [emb.shape[-2] for emb in embeddings]
-    embeddings = pad_sequence(embeddings, batch_first=True, padding_value=0) # (N, T, E)
+    embeddings = pad_sequence(embeddings, batch_first=True, padding_value=0) # (N, S, E)
+    qtr_token = pad_sequence(qtr_token, batch_first=True, padding_value=0) # (N, S, E)
 
-    # mask: (N, T)
+    # mask: (N, S)
     mask = torch.ones((embeddings.shape[0], embeddings.shape[1]))
     for i, length in enumerate(valid_seq_len):
         mask[i, :length] = 0
     mask = mask == 1
     
-    return embeddings.float(), mask
+    return embeddings.float(), mask, qtr_token.float()
 
 
 # -
@@ -652,7 +656,9 @@ def test_with_ckpt(datamodule, logger):
         df[:, update(t_ret=dt.Frame(t_ret))]
     
     
-    test_results = f'y_car_{np.random.randint(1e5)}.feather'
+    # add the timestamp to the filename, avoiding different
+    # processes accesssing the same file.
+    test_results = f'y_car_{time.time()}.feather'
     feather.write_feather(df.to_pandas(), test_results)
     logger.experiment.log_asset(test_results)
     os.unlink(test_results)
@@ -727,7 +733,7 @@ def train_one(Model, yqtr, data_hparams, model_hparams, trainer_hparams):
     trainer = pl.Trainer(gpus=trainer_hparams['gpus'], 
                          precision=trainer_hparams['precision'],
                          checkpoint_callback=checkpoint_callback, 
-                         callbacks=[early_stop_callback],
+                        #  callbacks=[early_stop_callback],
                          overfit_batches=trainer_hparams['overfit_batches'], 
                          log_every_n_steps=trainer_hparams['log_every_n_steps'],
                          val_check_interval=trainer_hparams['val_check_interval'], 
@@ -1032,7 +1038,7 @@ class CCGRU(CC):
         # logging
         return {'test_loss': loss_car}  
 
-# + [markdown] toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true
+# + [markdown] toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true toc-hr-collapsed=true
 # # STL
 # -
 
@@ -1051,7 +1057,7 @@ class CCTransformerSTLTxt(CC):
         self.save_hyperparameters()
         
         # positional encoding
-        self.encoder_pos = PositionalEncoding(self.hparams.d_model, self.hparams.attn_dropout)
+        self.pos_embedding = PositionalEncoding(self.hparams.d_model, self.hparams.attn_dropout)
         
         # encoder layers for input, expert, nonexpert
         encoder_layers_expert = nn.TransformerEncoderLayer(self.hparams.d_model, self.hparams.n_head_encoder, self.hparams.dff, self.hparams.attn_dropout)
@@ -1084,7 +1090,7 @@ class CCTransformerSTLTxt(CC):
         embeddings = embeddings.transpose(0, 1) # (S, N, E)
         
         # positional encoding
-        x = self.encoder_pos(embeddings) # (S, N, E)
+        x = self.pos_embedding(embeddings) # (S, N, E)
         
         # encode
         x_expert = self.encoder(x, src_key_padding_mask=src_key_padding_mask).transpose(0,1) # (N, S, E)
@@ -1143,7 +1149,7 @@ class CCTransformerSTLTxtFr(CC):
         self.save_hyperparameters()
         
         # positional encoding
-        self.encoder_pos = PositionalEncoding(self.hparams.d_model, self.hparams.attn_dropout)
+        self.pos_embedding = PositionalEncoding(self.hparams.d_model, self.hparams.attn_dropout)
         
         # encoder layers for input, expert, nonexpert
         encoder_layers_expert = nn.TransformerEncoderLayer(self.hparams.d_model, self.hparams.n_head_encoder, self.hparams.dff, self.hparams.attn_dropout)
@@ -1195,7 +1201,7 @@ class CCTransformerSTLTxtFr(CC):
         embeddings = embeddings.transpose(0, 1) # (S, N, E)
         
         # positional encoding
-        x = self.encoder_pos(embeddings) # (S, N, E)
+        x = self.pos_embedding(embeddings) # (S, N, E)
         
         # encode
         x_expert = self.encoder(x, src_key_padding_mask=src_key_padding_mask).transpose(0,1) # (N, S, E)
@@ -1511,14 +1517,17 @@ train_one(Model, yqtr, data_hparams, model_hparams, trainer_hparams)
 
 # MLP
 class CCMTLFrTxt(CC):
-    def __init__(self, learning_rate, d_model, max_seq_len, dropout, alpha, 
+    def __init__(self, learning_rate, d_model, max_seq_len, dropout, attn_dropout, alpha, 
                  n_head_encoder, n_layers_encoder, dff, model_type='MTLTxt'):
         super().__init__(learning_rate)
         
         self.save_hyperparameters()
         
-        # positional encoding
-        self.encoder_pos = PositionalEncoding(self.hparams.d_model)
+        # positional embedding
+        self.pos_embedding = PositionalEncoding(self.hparams.d_model)
+        
+        # quarter embedding. max_length=8 (quarters)
+        # self.qtr_embedding = nn.Embedding(8, self.hparams.d_model)
         
         # Build Encoder
         encoder_layer = nn.TransformerEncoderLayer(self.hparams.d_model,
@@ -1526,8 +1535,9 @@ class CCMTLFrTxt(CC):
                                                    self.hparams.dff)
         
         # atten layers for CAR
-        # self.attn_layers_car = nn.Linear(self.hparams.d_model, 1)
-        # self.attn_dropout_1 = nn.Dropout(self.hparams.attn_dropout)
+        self.attn_layer_ana = nn.Linear(self.hparams.d_model, 1)
+        self.attn_layer_man = nn.Linear(self.hparams.d_model, 1)
+        self.attn_dropout_1 = nn.Dropout(self.hparams.attn_dropout)
         
         self.encoder = nn.TransformerEncoder(encoder_layer, self.hparams.n_layers_encoder)
         
@@ -1537,8 +1547,8 @@ class CCMTLFrTxt(CC):
         self.dropout_2 = nn.Dropout(self.hparams.dropout)
         
         # FC layers
-        self.fc_1 = nn.Linear(768, 4)
-        self.fc_2 = nn.Linear(21, 32)
+        self.fc_1 = nn.Linear(768, 8)
+        self.fc_2 = nn.Linear(25, 32)
         self.fc_car = nn.Linear(32, 1)
         self.fc_inf = nn.Linear(32, 1)
         self.fc_rev = nn.Linear(32, 1)
@@ -1557,7 +1567,8 @@ class CCMTLFrTxt(CC):
     def shared_step(self, batch):
         # embeddings: list
         transcriptid, t_car, t_inf, t_rev, t_ret,\
-        emb_ana, mask_ana, emb_man, mask_man, \
+        emb_ana, mask_ana, qtr_token_ana, \
+        emb_man, mask_man, qtr_token_man, \
         manual_text, fin_ratios = batch
         
         # if S is longer than max_seq_len, cut
@@ -1565,13 +1576,15 @@ class CCMTLFrTxt(CC):
         emb_man = emb_man[:,:self.hparams.max_seq_len,] # (N, S, E)
         mask_ana = mask_ana[:,:self.hparams.max_seq_len] # (N, S)
         mask_man = mask_man[:,:self.hparams.max_seq_len] # (N, S)
+        # qtr_token_ana = qtr_token_ana[:,:self.hparams.max_seq_len] # (N, S)
+        # qtr_token_man = qtr_token_ana[:,:self.hparams.max_seq_len] # (N, S)
         
         emb_ana = emb_ana.transpose(0, 1) # (S, N, E)
         emb_man = emb_man.transpose(0, 1) # (S, N, E)
         
         # positional encoding
-        emb_ana = self.encoder_pos(emb_ana) # (S, N, E)
-        emb_man = self.encoder_pos(emb_man) # (S, N, E)
+        emb_ana = self.pos_embedding(emb_ana) # (S, N, E)
+        emb_man = self.pos_embedding(emb_man) # (S, N, E)
         
         # encode
         x_ana = self.encoder(emb_ana, src_key_padding_mask=mask_ana)\
@@ -1580,12 +1593,16 @@ class CCMTLFrTxt(CC):
             .transpose(0,1) # (N, S, E)
         
         # decode with attn
-        # x_attn = self.attn_dropout_1(F.softmax(self.attn_layers_car(x_expert), dim=1)) # (N, S, 1)
-        # x_expert = torch.bmm(x_expert.transpose(-1,-2), x_attn).squeeze(-1) # (N, E)
+        x_attn_ana = self.attn_dropout_1(F.softmax(self.attn_layer_ana(x_ana), dim=1)) # (N, S, 1)
+        x_attn_man = self.attn_dropout_1(F.softmax(self.attn_layer_man(x_man), dim=1)) # (N, S, 1)
+        x_ana = torch.bmm(x_ana.transpose(-1,-2), x_attn_ana).squeeze(-1) # (N, E)
+        x_man = torch.bmm(x_man.transpose(-1,-2), x_attn_man).squeeze(-1) # (N, E)
         
         # decode with avgpool
-        x_ana = x_ana.mean(1) # (N, E)
-        x_man = x_man.mean(1) # (N, E)
+        # x_ana = x_ana.mean(1) # (N, E)
+        # x_man = x_man.mean(1) # (N, E)
+        # x_ana = x_ana.max(1).values # (N, E)
+        # x_man = x_man.max(1).values # (N, E)
         x_diff = x_ana-x_man  # (N, E)
         
         # x_text = torch.cat([x_ana, x_man, x_diff], dim=1)
@@ -1678,10 +1695,9 @@ data_hparams = {
     'window_size': window_size,
     
     'preemb_dir': '/home/yu/OneDrive/CC/data/Embeddings/longformer',
-    'tid_cid_pair_name1': 'qa_analyst',
+    'tid_cid_pair_name1': 'md',
     'tid_cid_pair_name2': 'qa_manager',
-    'tid_from_to_pair_name1': '1qtr',
-    'tid_from_to_pair_name2': '1qtr'
+    'tid_from_to_pair_nqtr': 2, # "2" means include the current and the previous qtr
 }
 
 # model hparams
@@ -1689,6 +1705,7 @@ model_hparams = {
     'alpha': 0.1, # key!
     'learning_rate': 3e-4,
     'dropout': 0.1,
+    'attn_dropout': 0.1,
     'd_model': 768,
 
     'n_layers_encoder': 1,
@@ -1709,14 +1726,14 @@ trainer_hparams = {
     'machine': 'yu-workstation', # key!
     'note': args.note, 
     'log_every_n_steps': 50,
-    'save_top_k': 1,
-    'val_check_interval': 0.2,
+    'save_top_k': -1, # default: 1
+    'val_check_interval': 1.0, #: 1: check every 1 "step"; 1.0: check every 1 "epoch"
 
     # data size
     'precision': 32, # key!
     'overfit_batches': 0.0,
     'min_epochs': 1, # default: 10
-    'max_epochs': 20, # default: 20. Must be larger enough to have at least one "val_rmse is not in the top 1"
+    'max_epochs': 30, # default: 20. Must be larger enough to have at least one "val_rmse is not in the top 1"
     'max_steps': None, 
     'accumulate_grad_batches': 1,
 
@@ -1724,9 +1741,11 @@ trainer_hparams = {
     # The check of patience depends on **how often you compute your val_loss** (`val_check_interval`). 
     # Say you check val every N baches, then `early_stop_callback` will compare to your latest N **baches**.
     # If you compute val_loss every N **epoches**, then `early_stop_callback` will compare to the latest N **epochs**.
-    'early_stop_patience': 6, 
+    'early_stop_patience': 2, 
 
-    'checkpoint_period': 1}
+    # save checkpoint every N epochs. Whether it'll be saved eventually is 
+    # determined by save_top_k
+    'checkpoint_period': 1} 
 
 # load split_df
 split_df = load_split_df(data_hparams['window_size'])
@@ -1998,4 +2017,278 @@ yt_extractor = dt.rbind(yt_extractor)
 # sv('all_yt_extractor', 'yt_extractor')
 '''
 
-# # Temp
+
+# # Checkpoint
+
+# MLP
+class CkptModel(CC):
+    def __init__(self, learning_rate, d_model, max_seq_len, dropout, alpha, 
+                 n_head_encoder, n_layers_encoder, dff, model_type='MTLTxt'):
+        super().__init__(learning_rate)
+        
+        self.save_hyperparameters()
+        
+        # positional encoding
+        self.pos_embedding = PositionalEncoding(self.hparams.d_model)
+        
+        # Build Encoder
+        encoder_layer = nn.TransformerEncoderLayer(self.hparams.d_model,
+                                                   self.hparams.n_head_encoder,
+                                                   self.hparams.dff)
+        
+        # atten layers for CAR
+        # self.attn_layers_car = nn.Linear(self.hparams.d_model, 1)
+        # self.attn_dropout_1 = nn.Dropout(self.hparams.attn_dropout)
+        
+        self.encoder = nn.TransformerEncoder(encoder_layer, self.hparams.n_layers_encoder)
+        
+
+        # Dropout layers
+        self.dropout_1 = nn.Dropout(self.hparams.dropout)
+        self.dropout_2 = nn.Dropout(self.hparams.dropout)
+        
+        # FC layers
+        self.fc_1 = nn.Linear(768, 8)
+        self.fc_2 = nn.Linear(25, 32)
+        self.fc_car = nn.Linear(32, 1)
+        self.fc_inf = nn.Linear(32, 1)
+        self.fc_rev = nn.Linear(32, 1)
+        self.fc_ret = nn.Linear(32, 1)
+        
+    def forward(self, batch):
+        transcriptid, \
+        y_car, y_inf, y_rev, y_ret, \
+        t_car, t_inf, t_rev, t_ret = self.shared_step(batch)
+        
+        return {'transcriptid': transcriptid,
+                'y_car': y_car, 'y_inf': y_inf, 'y_rev': y_rev, 'y_ret': y_ret,
+                't_car': t_car, 't_inf': t_inf, 't_rev': t_rev, 't_ret': t_ret}
+    
+    
+    def shared_step(self, batch):
+        # embeddings: list
+        transcriptid, t_car, t_inf, t_rev, t_ret,\
+        emb_ana, mask_ana, emb_man, mask_man, \
+        manual_text, fin_ratios = batch
+        
+        # if S is longer than max_seq_len, cut
+        emb_ana = emb_ana[:,:self.hparams.max_seq_len,] # (N, S, E)
+        emb_man = emb_man[:,:self.hparams.max_seq_len,] # (N, S, E)
+        mask_ana = mask_ana[:,:self.hparams.max_seq_len] # (N, S)
+        mask_man = mask_man[:,:self.hparams.max_seq_len] # (N, S)
+        
+        emb_ana = emb_ana.transpose(0, 1) # (S, N, E)
+        emb_man = emb_man.transpose(0, 1) # (S, N, E)
+        
+        # positional encoding
+        emb_ana = self.pos_embedding(emb_ana) # (S, N, E)
+        emb_man = self.pos_embedding(emb_man) # (S, N, E)
+        
+        # encode
+        x_ana = self.encoder(emb_ana, src_key_padding_mask=mask_ana)\
+            .transpose(0,1) # (N, S, E)
+        x_man = self.encoder(emb_man, src_key_padding_mask=mask_man)\
+            .transpose(0,1) # (N, S, E)
+        
+        # decode with attn
+        # x_attn = self.attn_dropout_1(F.softmax(self.attn_layers_car(x_expert), dim=1)) # (N, S, 1)
+        # x_expert = torch.bmm(x_expert.transpose(-1,-2), x_attn).squeeze(-1) # (N, E)
+        
+        # decode with avgpool
+        # x_ana = x_ana.mean(1) # (N, E)
+        # x_man = x_man.mean(1) # (N, E)
+        x_ana = x_ana.max(1).values # (N, E)
+        x_man = x_man.max(1).values # (N, E)
+        x_diff = x_ana-x_man  # (N, E)
+        
+        # x_text = torch.cat([x_ana, x_man, x_diff], dim=1)
+        x_text = x_diff
+        
+        # decode with maxpool
+        # x_expert_maxpool = x_expert.max(1)[0] # (N, E)
+        
+        # Reduce dimension of text features
+        x_text = self.dropout_1(F.relu(self.fc_1(x_text))) # (N, 16)
+        
+        x_fr = torch.cat([fin_ratios, manual_text], dim=-1) # (N, 2+15)
+
+        # concat: text + fr
+        x = torch.cat([x_text, x_fr], dim=-1) # (N, 16+17)
+        
+        x = self.dropout_2(F.relu(self.fc_2(x)))
+        y_car = self.fc_car(x) # (N, 1)    
+        y_inf = self.fc_inf(x) # (N, 1)
+        y_rev = self.fc_rev(x) # (N, 1)
+        y_ret = self.fc_ret(x) # (N, 1)
+        
+        # regularize dimension
+        y_car = y_car.squeeze(-1)
+        y_inf = y_inf.squeeze(-1)
+        y_rev = y_rev.squeeze(-1)
+        y_ret = y_ret.squeeze(-1)
+        
+        return transcriptid, \
+               y_car, y_inf, y_rev, y_ret, \
+               t_car, t_inf, t_rev, t_ret
+        
+    # train step
+    def training_step(self, batch, idx):
+        transcriptid, \
+        y_car, y_inf, y_rev, y_ret, \
+        t_car, t_inf, t_rev, t_ret = self.shared_step(batch)
+        
+        loss_car = self.mse_loss(y_car, t_car)
+        loss_inf = self.mse_loss(y_inf, t_inf)
+        loss_rev = self.mse_loss(y_rev, t_rev)
+        loss_ret = self.mse_loss(y_ret, t_ret)
+        
+        loss = loss_car + self.hparams.alpha*(0.67*loss_rev+0.23*loss_inf+0.17*loss_ret)/3
+        self.log('train_loss', loss)
+        
+        return loss
+    
+    # validation step
+    def validation_step(self, batch, idx):
+        transcriptid, \
+        y_car, y_inf, y_rev, y_ret, \
+        t_car, t_inf, t_rev, t_ret = self.shared_step(batch)
+        
+        loss_car = self.mse_loss(y_car, t_car)
+        loss_inf = self.mse_loss(y_inf, t_inf)
+        loss_rev = self.mse_loss(y_rev, t_rev)
+        loss_ret = self.mse_loss(y_ret, t_ret)
+        
+        loss = loss_car + self.hparams.alpha*(0.67*loss_rev+0.23*loss_inf+0.17*loss_ret)/3
+        
+        self.log('val_loss', loss)
+
+
+def test_ckpt(model_name, epoch, datamodule, Model, device):
+    # save & log `y_car`
+    ckpt_path = f"{CHECKPOINT_DIR}/{model_name}_{data_hparams['yqtr']}_epoch={epoch}.ckpt"
+    ckpt_path = glob.glob(ckpt_path)
+    assert len(ckpt_path)==1, f'Expect only one checkpoint, but found: {ckpt_path}'
+    ckpt_path = ckpt_path[0]
+
+    # init model from checkpoint
+    model = Model.load_from_checkpoint(ckpt_path)
+    model.eval()
+    model.to(device)
+
+    transcriptids = []
+    y_car, y_rev, y_inf, y_ret = [], [], [], []
+    t_car, t_rev, t_inf, t_ret = [], [], [], []
+
+    # start predicting
+    with torch.no_grad():
+        for batch in datamodule.test_dataloader():
+
+            batch = [t.to(device) for t in batch]
+
+            res = model.forward(batch)
+            
+            transcriptids.extend(res['transcriptid'].tolist())
+            y_car.extend(res['y_car'].tolist())
+            t_car.extend(res['t_car'].tolist())
+            
+            if 'y_rev' in res:
+                y_rev.extend(res['y_rev'].tolist())
+            if 'y_inf' in res:
+                y_inf.extend(res['y_inf'].tolist())
+            if 'y_ret' in res:
+                y_ret.extend(res['y_ret'].tolist()) 
+            if 't_rev' in res:
+                t_rev.extend(res['t_rev'].tolist())
+            if 't_inf' in res:
+                t_inf.extend(res['t_inf'].tolist())
+            if 't_ret' in res:
+                t_ret.extend(res['t_ret'].tolist())
+
+    # upload yt
+    df = dt.Frame({'transcriptid':transcriptids,
+                   'y_car':y_car,
+                   't_car':t_car})
+    df[:, update(yqtr=data_hparams['yqtr'])]
+    
+    if len(y_inf)==len(y_car):
+        df[:, update(y_inf=dt.Frame(y_inf))]
+    if len(y_rev)==len(y_car):
+        df[:, update(y_rev=dt.Frame(y_rev))]
+    if len(y_ret)==len(y_car):
+        df[:, update(y_ret=dt.Frame(y_ret))]
+        
+    if len(t_rev)==len(t_car):
+        df[:, update(t_rev=dt.Frame(t_rev))]
+    if len(t_inf)==len(t_car):
+        df[:, update(t_inf=dt.Frame(t_inf))]
+    if len(t_ret)==len(t_car):
+        df[:, update(t_ret=dt.Frame(t_ret))]
+    
+    
+    return df
+
+
+def test_one_epoch(model_name, epoch, data_hparams, Model, device):
+    '''Loop over all yqtrs
+    '''
+    split_df = load_split_df(data_hparams['window_size'])
+    yqtrs = ntile(split_df.yqtr.tolist(), ntiles=1)[0]
+    
+    y_car = []
+    for yqtr in tqdm(yqtrs):
+        data_hparams.update({'yqtr': yqtr})
+
+        # create datamodule
+        datamodule = CCDataModule(**data_hparams)
+        datamodule.setup()
+
+        # make prediction
+        y = test_ckpt(model_name, epoch, datamodule, Model, device)
+        y_car.append(y)
+        
+    y_car = dt.rbind(y_car)
+    y_car[:, update(model_name=model_name, epoch=epoch, 
+                    window_size=data_hparams['window_size'])]
+    
+    y_car = y_car.to_pandas()
+    feather.write_feather(y_car, f'data/y-pred/yt_{model_name}_epoch={epoch}.feather')
+
+    return None
+
+
+'''
+data_hparams = {
+    'targets_name': 'targets_final_addretail', # key!
+
+    'num_workers': 4,
+    'batch_size': 32,
+    'val_batch_size': 32,
+    'test_batch_size': 32,
+    
+    'text_in_dataset': True,
+    'window_size': '7y',
+    
+    'preemb_dir': '/home/yu/OneDrive/CC/data/Embeddings/longformer',
+    'tid_cid_pair_name1': 'qa_analyst',
+    'tid_cid_pair_name2': 'qa_manager',
+    'tid_from_to_pair_name1': '1qtr',
+    'tid_from_to_pair_name2': '1qtr'
+}
+
+# get arg
+parser = argparse.ArgumentParser(description='Earnings Call')
+parser.add_argument('-n', '--n_workers', type=int, required=True)
+parser.add_argument('-i', '--worker_id', type=int, required=True)
+args = parser.parse_args()
+
+device = 0 if args.worker_id%2==0 else 1
+
+epochs = ntile(list(range(30)), args.n_workers)
+model_name = 'MTLTxt-16'
+
+for epoch in epochs[args.worker_id-1]:
+    print(f'Epoch {epoch}/29, worker {args.worker_id}/{args.n_workers} on CUDA:{device}')
+    test_one_epoch(model_name, epoch=epoch, 
+                   data_hparams=data_hparams, Model=CkptModel,
+                   device=f'cuda:{device}')
+'''
